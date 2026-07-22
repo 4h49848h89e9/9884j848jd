@@ -1,130 +1,155 @@
-name: Video Downloader (core CLI)
+name: Remote Video Downloader
+
+# Runs the project's own CLI (cli.py / main.py --cli) on GitHub's servers,
+# so the actual download happens on GitHub's fast connection instead of yours.
+# The finished file is uploaded as a workflow artifact you download once, at the end.
+#
+# Usage:
+#   1. Go to Actions -> "Remote Video Downloader" -> "Run workflow"
+#   2. Fill in the inputs (only "video_url" is required)
+#   3. Wait for the run to finish
+#   4. Open the finished run -> scroll to "Artifacts" -> download the zip
 
 on:
   workflow_dispatch:
     inputs:
-      url:
-        description: 'Video URL to download'
+      video_url:
+        description: "Video URL to download"
         required: true
-        default: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'
+        type: string
       format:
-        description: 'Output format (mp4 (with Audio), mp4 (without Audio), mp3, avi, mkv)'
+        description: "Output format"
         required: false
-        default: 'mp4 (with Audio)'
+        default: "mp4 (with Audio)"
+        type: choice
+        options:
+          - "mp4 (with Audio)"
+          - "mp4 (without Audio)"
+          - "mp3"
+          - "avi"
+          - "mkv"
       resolution:
-        description: 'Video quality (best, 1080, 720, 480, 360)'
+        description: "Max video height (ignored for mp3)"
         required: false
-        default: '720'
+        default: "best"
+        type: choice
+        options:
+          - "best"
+          - "1080"
+          - "720"
+          - "480"
+          - "360"
       bitrate:
-        description: 'Audio bitrate (320, 256, 192, 128)'
+        description: "Audio bitrate in kbps (ignored for 'mp4 (without Audio)')"
         required: false
-        default: '192'
+        default: "192"
+        type: choice
+        options:
+          - "320"
+          - "256"
+          - "192"
+          - "128"
       filename:
-        description: 'Custom output filename (without extension, leave empty for original title)'
+        description: "Optional output filename, without extension (leave empty to use the video title)"
         required: false
-        default: ''
-      download_playlist:
-        description: 'Download entire playlist (true/false)'
+        default: ""
+        type: string
+      ytdlp_args:
+        description: 'Optional raw yt-dlp args, e.g. --cookies cookies.txt --proxy socks5://127.0.0.1:1080'
         required: false
-        default: 'false'
+        default: ""
+        type: string
 
 jobs:
   download:
+    name: Download video
     runs-on: ubuntu-latest
-    name: Download with core CLI
+    timeout-minutes: 350
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Python
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: "3.12"
 
-      - name: Install system dependencies (ffmpeg)
+      - name: Get current week (for cache rotation)
+        id: date
+        run: echo "week=$(date +'%Y-%V')" >> "$GITHUB_OUTPUT"
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-remote-dl-${{ hashFiles('requirements.txt') }}-${{ steps.date.outputs.week }}
+          restore-keys: |
+            pip-remote-dl-${{ hashFiles('requirements.txt') }}-
+            pip-remote-dl-
+
+      - name: Install system dependencies (ffmpeg + Qt runtime libs)
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg
+          sudo apt-get update -y
+          sudo apt-get install -y \
+            ffmpeg \
+            libxcb-xinerama0 libxcb-cursor0 libgl1 libegl1 \
+            libdbus-1-3 libxkbcommon-x11-0
 
-      - name: Install Python dependencies (CLI only)
+      - name: Install Deno (used by yt-dlp for YouTube signature/nsig solving)
         run: |
-          pip install --upgrade pip
-          pip install yt-dlp curl-cffi pycryptodomex
+          curl -fsSL https://deno.land/install.sh | sh
+          echo "$HOME/.deno/bin" >> "$GITHUB_PATH"
 
-      - name: Prepare cookies file from secret
+      - name: Install Python dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Prepare output folder
+        run: mkdir -p "$GITHUB_WORKSPACE/downloads"
+
+      - name: Run downloader (CLI, non-interactive)
         env:
-          YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
+          QT_QPA_PLATFORM: offscreen
+          VD_URL: ${{ inputs.video_url }}
+          VD_FORMAT: ${{ inputs.format }}
+          VD_RESOLUTION: ${{ inputs.resolution }}
+          VD_BITRATE: ${{ inputs.bitrate }}
+          VD_FILENAME: ${{ inputs.filename }}
+          VD_YTDLP_ARGS: ${{ inputs.ytdlp_args }}
         run: |
-          if [ -n "$YOUTUBE_COOKIES" ]; then
-            echo "$YOUTUBE_COOKIES" > cookies.txt
-            echo "✅ Cookies file created."
+          set -e
+
+          ARGS=(--cli "$VD_URL" -f "$VD_FORMAT" -d "$GITHUB_WORKSPACE/downloads")
+
+          # Mirrors cli.py's own logic for when each flag is actually relevant.
+          if [ "$VD_FORMAT" != "mp3" ]; then
+            ARGS+=(-r "$VD_RESOLUTION")
+          fi
+          if [ "$VD_FORMAT" != "mp4 (without Audio)" ]; then
+            ARGS+=(-b "$VD_BITRATE")
+          fi
+          if [ -n "$VD_FILENAME" ]; then
+            ARGS+=(-n "$VD_FILENAME")
+          fi
+
+          echo "Running: python main.py ${ARGS[*]} ${VD_YTDLP_ARGS:+-a $VD_YTDLP_ARGS}"
+
+          if [ -n "$VD_YTDLP_ARGS" ]; then
+            # Word-split intentionally: lets multi-flag strings like
+            # "--cookies cookies.txt --proxy socks5://..." work as separate -a tokens.
+            python main.py "${ARGS[@]}" -a $VD_YTDLP_ARGS
           else
-            echo "⚠️ No YOUTUBE_COOKIES secret set – downloads may fail on YouTube."
-            touch cookies.txt   # empty file to avoid 'file not found' errors
+            python main.py "${ARGS[@]}"
           fi
 
-      - name: Create download folder
-        run: mkdir -p downloads
+      - name: List downloaded files
+        run: ls -lh "$GITHUB_WORKSPACE/downloads"
 
-      - name: Run download via core CLI
-        id: download
-        run: |
-          set -euxo pipefail
-
-          # Build the yt-dlp extra arguments (cookies + playlist)
-          YTDLP_ARGS="--cookies cookies.txt"
-          if [[ "${{ github.event.inputs.download_playlist }}" == "true" ]]; then
-            YTDLP_ARGS="$YTDLP_ARGS --yes-playlist"
-          else
-            YTDLP_ARGS="$YTDLP_ARGS --no-playlist"
-          fi
-
-          # Prepare CLI arguments
-          CLI_ARGS=""
-          if [[ -n "${{ github.event.inputs.filename }}" ]]; then
-            CLI_ARGS="$CLI_ARGS -n \"${{ github.event.inputs.filename }}\""
-          fi
-
-          # Use explicit download folder (./downloads) for reliable artifact upload
-          CLI_ARGS="$CLI_ARGS -d ./downloads"
-
-          # Run the CLI with all options
-          python main.py --cli \
-            "${{ github.event.inputs.url }}" \
-            -f "${{ github.event.inputs.format }}" \
-            -r "${{ github.event.inputs.resolution }}" \
-            -b "${{ github.event.inputs.bitrate }}" \
-            $CLI_ARGS \
-            -a $YTDLP_ARGS
-
-          # List downloaded files (for debugging)
-          echo "Downloaded files:"
-          find downloads -type f -exec ls -lh {} \;
-
-          # Signal success if at least one file exists
-          if [ "$(find downloads -type f | wc -l)" -gt 0 ]; then
-            echo "status=success" >> $GITHUB_OUTPUT
-          else
-            echo "status=failed" >> $GITHUB_OUTPUT
-            echo "::error::No files were downloaded"
-            exit 1
-          fi
-
-      - name: Upload artifact
+      - name: Upload downloaded file(s) as artifact
         uses: actions/upload-artifact@v4
         with:
           name: video-download-${{ github.run_id }}
-          path: downloads/*
-          retention-days: 7
+          path: downloads/**
           if-no-files-found: error
-
-      - name: Summary
-        if: always()
-        run: |
-          echo "# 📥 Download Result" >> $GITHUB_STEP_SUMMARY
-          echo "| **Status** | ${{ steps.download.outputs.status }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| **URL** | ${{ github.event.inputs.url }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Format** | ${{ github.event.inputs.format }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Resolution** | ${{ github.event.inputs.resolution }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Bitrate** | ${{ github.event.inputs.bitrate }} |" >> $GITHUB_STEP_SUMMARY
+          retention-days: 3
