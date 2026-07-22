@@ -1,118 +1,105 @@
-name: Video Downloader (fixed)
+name: Video Downloader (core CLI)
 
 on:
   workflow_dispatch:
     inputs:
       url:
-        description: "Video URL to download"
+        description: 'Video URL to download'
         required: true
-        default: "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+        default: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'
       format:
-        description: "Output format (mp4 (with Audio), mp4 (without Audio), mp3)"
+        description: 'Output format (mp4 (with Audio), mp4 (without Audio), mp3, avi, mkv)'
         required: false
-        default: "mp4 (with Audio)"
+        default: 'mp4 (with Audio)'
       resolution:
-        description: "Video quality (best, 1080, 720, 480, 360)"
+        description: 'Video quality (best, 1080, 720, 480, 360)'
         required: false
-        default: "720"
+        default: '720'
       bitrate:
-        description: "Audio bitrate (320, 256, 192, 128)"
+        description: 'Audio bitrate (320, 256, 192, 128)'
         required: false
-        default: "192"
+        default: '192'
       filename:
-        description: "Custom output filename (without extension, leave empty for original title)"
+        description: 'Custom output filename (without extension, leave empty for original title)'
         required: false
-        default: ""
+        default: ''
       download_playlist:
-        description: "Download entire playlist (true/false)"
+        description: 'Download entire playlist (true/false)'
         required: false
-        default: "false"
+        default: 'false'
 
 jobs:
   download:
     runs-on: ubuntu-latest
-    name: Download video with yt-dlp
+    name: Download with core CLI
 
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: '3.12'
 
-      - name: Install FFmpeg and yt-dlp
+      - name: Install dependencies and ffmpeg
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq ffmpeg
           pip install --upgrade pip
-          pip install yt-dlp
+          pip install -r requirements.txt
 
-      - name: Prepare download folder
+      - name: Prepare cookies file from secret
+        env:
+          YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
+        run: |
+          if [ -n "$YOUTUBE_COOKIES" ]; then
+            echo "$YOUTUBE_COOKIES" > cookies.txt
+            echo "✅ Cookies file created."
+          else
+            echo "⚠️ No YOUTUBE_COOKIES secret set – downloads may fail on YouTube."
+            touch cookies.txt   # empty file to avoid 'file not found' errors
+          fi
+
+      - name: Create download folder
         run: mkdir -p downloads
 
-      - name: Download video
+      - name: Run download via core CLI
         id: download
         run: |
           set -euxo pipefail
 
-          # Read inputs
-          URL="${{ github.event.inputs.url }}"
-          FORMAT="${{ github.event.inputs.format }}"
-          RES="${{ github.event.inputs.resolution }}"
-          BIT="${{ github.event.inputs.bitrate }}"
-          FNAME="${{ github.event.inputs.filename }}"
-          PLAYLIST="${{ github.event.inputs.download_playlist }}"
-          OUTDIR="downloads"
-
-          # Build output template
-          if [ -n "$FNAME" ]; then
-            OUTPUT="${OUTDIR}/${FNAME}.%(ext)s"
+          # Build the yt-dlp extra arguments (cookies + playlist)
+          YTDLP_ARGS="--cookies cookies.txt"
+          if [[ "${{ github.event.inputs.download_playlist }}" == "true" ]]; then
+            YTDLP_ARGS="$YTDLP_ARGS --yes-playlist"
           else
-            OUTPUT="${OUTDIR}/%(title)s.%(ext)s"
+            YTDLP_ARGS="$YTDLP_ARGS --no-playlist"
           fi
 
-          # Build format options
-          FORMAT_OPTS=""
-          if [ "$FORMAT" = "mp3" ]; then
-            FORMAT_OPTS="-x --audio-format mp3 --audio-quality ${BIT}"
-          elif [ "$FORMAT" = "mp4 (with Audio)" ]; then
-            if [ "$RES" = "best" ]; then
-              FORMAT_OPTS="-f bestvideo+bestaudio"
-            else
-              FORMAT_OPTS="-f 'bestvideo[height<=${RES}]+bestaudio/best[height<=${RES}]'"
-            fi
-          elif [ "$FORMAT" = "mp4 (without Audio)" ]; then
-            if [ "$RES" = "best" ]; then
-              FORMAT_OPTS="-f bestvideo"
-            else
-              FORMAT_OPTS="-f 'bestvideo[height<=${RES}]'"
-            fi
-          else
-            # fallback: just get best
-            FORMAT_OPTS="-f best"
+          # Prepare CLI arguments
+          CLI_ARGS=""
+          if [[ -n "${{ github.event.inputs.filename }}" ]]; then
+            CLI_ARGS="$CLI_ARGS -n \"${{ github.event.inputs.filename }}\""
           fi
 
-          # Playlist option
-          PLAYLIST_OPTS="--no-playlist"
-          if [ "$PLAYLIST" = "true" ]; then
-            PLAYLIST_OPTS="--yes-playlist"
-          fi
+          # Use explicit download folder (./downloads) for reliable artifact upload
+          CLI_ARGS="$CLI_ARGS -d ./downloads"
 
-          # Execute download
-          echo "Running yt-dlp..."
-          yt-dlp \
-            --no-check-certificates \
-            --ignore-errors \
-            --no-warnings \
-            -o "$OUTPUT" \
-            $FORMAT_OPTS \
-            $PLAYLIST_OPTS \
-            "$URL"
+          # Run the CLI with all options
+          python main.py --cli \
+            "${{ github.event.inputs.url }}" \
+            -f "${{ github.event.inputs.format }}" \
+            -r "${{ github.event.inputs.resolution }}" \
+            -b "${{ github.event.inputs.bitrate }}" \
+            $CLI_ARGS \
+            -a $YTDLP_ARGS
 
-          # Check if files exist
+          # List downloaded files (for debugging)
           echo "Downloaded files:"
           find downloads -type f -exec ls -lh {} \;
 
-          # Signal success only if at least one file was downloaded
+          # Signal success if at least one file exists
           if [ "$(find downloads -type f | wc -l)" -gt 0 ]; then
             echo "status=success" >> $GITHUB_OUTPUT
           else
@@ -120,7 +107,6 @@ jobs:
             echo "::error::No files were downloaded"
             exit 1
           fi
-        shell: bash
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
