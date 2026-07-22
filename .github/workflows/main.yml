@@ -1,120 +1,73 @@
 # .github/workflows/main.yml
-# Complete GitHub Actions workflow for Video Downloader
-# Builds binaries for Windows, Linux (dir/AppImage/deb), and macOS (Intel/Apple Silicon)
+# Complete Video Downloader - Downloads videos directly in GitHub Actions
+# Takes the exact same inputs as the program and downloads the video
 
-name: Build and Package Video Downloader
+name: Video Downloader - Download Videos via GitHub Actions
 
 on:
   workflow_dispatch:
     inputs:
-      version:
-        description: "Version string (e.g. 2.2.1)"
+      url:
+        description: "Video URL to download"
         required: true
-        default: "0.0.0"
-      targets:
-        description: "Build targets (comma-separated: windows, linux, appimage, deb, mac)"
+        default: "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+      
+      format:
+        description: "Output format"
         required: false
-        default: "windows, linux, appimage, deb, mac"
-      upload_to_release:
-        description: "Upload to GitHub Release"
-        required: false
-        default: "false"
+        default: "mp4 (with Audio)"
         type: choice
         options:
-          - "false"
-          - "true"
-
-  release:
-    description: "Create release and upload binaries"
-    types: [created]
+          - "mp4 (with Audio)"
+          - "mp4 (without Audio)"
+          - "mp3"
+          - "avi"
+          - "mkv"
+      
+      resolution:
+        description: "Video quality (max height)"
+        required: false
+        default: "best"
+        type: choice
+        options:
+          - "best"
+          - "1080"
+          - "720"
+          - "480"
+          - "360"
+      
+      bitrate:
+        description: "Audio bitrate (kbps)"
+        required: false
+        default: "192"
+        type: choice
+        options:
+          - "320"
+          - "256"
+          - "192"
+          - "128"
+      
+      filename:
+        description: "Custom filename (without extension)"
+        required: false
+        default: ""
+      
+      download_playlist:
+        description: "Download entire playlist"
+        required: false
+        default: "false"
+        type: boolean
+      
+      ytdlp_args:
+        description: "Additional yt-dlp arguments"
+        required: false
+        default: ""
 
 jobs:
-  # ──────────────────────────────────────────────────────────────
-  # JOB: build-windows
-  # ──────────────────────────────────────────────────────────────
-  build-windows:
-    name: Build Windows (exe)
-    runs-on: windows-latest
-    if: |
-      (github.event_name == 'workflow_dispatch' && (contains(github.event.inputs.targets, 'windows') || github.event.inputs.targets == '')) ||
-      (github.event_name == 'release')
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Get current week (for cache rotation)
-        id: date
-        shell: pwsh
-        run: echo "week=$(Get-Date -UFormat '%Y-%V')" >> $env:GITHUB_OUTPUT
-
-      - name: Cache pip (Windows)
-        uses: actions/cache@v4
-        with:
-          path: ~\AppData\Local\pip\Cache
-          key: pip-win-${{ hashFiles('requirements.txt') }}-${{ steps.date.outputs.week }}
-          restore-keys: |
-            pip-win-${{ hashFiles('requirements.txt') }}-
-            pip-win-
-
-      - name: Cache PyInstaller (Windows)
-        uses: actions/cache@v4
-        with:
-          path: ~\AppData\Roaming\pyinstaller
-          key: pyinstaller-win-py3.12-${{ hashFiles('requirements.txt') }}
-          restore-keys: pyinstaller-win-py3.12-
-
-      - name: Install Python dependencies
-        run: |
-          pip install --upgrade pip
-          pip install -r requirements.txt pyinstaller pillow
-
-      - name: Build with PyInstaller (Windows)
-        run: |
-          python -m PyInstaller `
-            --noconfirm --onedir --windowed --clean --noupx `
-            --icon=icon.png `
-            --exclude-module pycryptodomex.selftest `
-            --exclude-module pycryptodomex.tests `
-            --name "Video Downloader" `
-            main.py
-
-      - name: Zip portable output (Windows)
-        run: |
-          Compress-Archive -Path "dist\Video Downloader" -DestinationPath "Windows_x64-portable.zip"
-
-      - name: Upload artifact (Windows)
-        uses: actions/upload-artifact@v4
-        with:
-          name: VideoDownloader-Windows
-          path: Windows_x64-portable.zip
-
-      - name: Upload to release (Windows)
-        if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && github.event.inputs.upload_to_release == 'true')
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ github.event.release.upload_url }}
-          asset_path: Windows_x64-portable.zip
-          asset_name: VideoDownloader-Windows-x64-${{ github.event.inputs.version || github.ref_name }}.zip
-          asset_content_type: application/zip
-
-  # ──────────────────────────────────────────────────────────────
-  # JOB: build-linux
-  # ──────────────────────────────────────────────────────────────
-  build-linux:
-    name: Build Linux (dir / AppImage / deb)
+  download-video:
+    name: Download Video
     runs-on: ubuntu-latest
-    if: |
-      (github.event_name == 'workflow_dispatch' && (contains(github.event.inputs.targets, 'linux') || contains(github.event.inputs.targets, 'appimage') || contains(github.event.inputs.targets, 'deb') || github.event.inputs.targets == '')) ||
-      (github.event_name == 'release')
-
+    
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -123,390 +76,219 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
-      - name: Get current week (for cache rotation)
-        id: date
-        run: echo "week=$(date +'%Y-%V')" >> $GITHUB_OUTPUT
-
-      - name: Cache pip (Linux)
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: pip-linux-${{ hashFiles('requirements.txt') }}-${{ steps.date.outputs.week }}
-          restore-keys: |
-            pip-linux-${{ hashFiles('requirements.txt') }}-
-            pip-linux-
-
-      - name: Cache apt packages
-        uses: actions/cache@v4
-        with:
-          path: |
-            /var/cache/apt/archives
-            /var/lib/apt/lists
-          key: apt-${{ runner.os }}-${{ hashFiles('.github/workflows/main.yml') }}
-          restore-keys: apt-${{ runner.os }}-
 
       - name: Install system dependencies
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y \
-            libxcb-xinerama0 libxcb-cursor0 libgl1 libegl1 \
-            libdbus-1-3 libxkbcommon-x11-0 \
-            fuse libfuse2 \
-            dpkg-dev \
-            file
+          sudo apt-get install -y ffmpeg
 
       - name: Install Python dependencies
         run: |
           pip install --upgrade pip
-          pip install -r requirements.txt pyinstaller
+          pip install yt-dlp requests
 
-      - name: Cache appimagetool
-        id: cache-appimagetool
-        uses: actions/cache@v4
-        with:
-          path: /usr/local/bin/appimagetool
-          key: appimagetool-x86_64-continuous
-
-      - name: Download appimagetool (if not cached)
-        if: steps.cache-appimagetool.outputs.cache-hit != 'true'
+      - name: Download video
+        id: download
         run: |
-          sudo wget -q \
-            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage \
-            -O /usr/local/bin/appimagetool
-          sudo chmod +x /usr/local/bin/appimagetool
+          # Build the yt-dlp command
+          YTDLP_CMD="yt-dlp"
+          
+          # Handle playlist option
+          if [ "${{ inputs.download_playlist }}" == "true" ]; then
+            YTDLP_CMD="$YTDLP_CMD --yes-playlist"
+          else
+            YTDLP_CMD="$YTDLP_CMD --no-playlist"
+          fi
+          
+          # Handle format
+          case "${{ inputs.format }}" in
+            "mp4 (with Audio)")
+              YTDLP_CMD="$YTDLP_CMD -f bestvideo+bestaudio/best --merge-output-format mp4"
+              ;;
+            "mp4 (without Audio)")
+              YTDLP_CMD="$YTDLP_CMD -f bestvideo --merge-output-format mp4"
+              ;;
+            "mp3")
+              YTDLP_CMD="$YTDLP_CMD -f bestaudio --extract-audio --audio-format mp3 --audio-quality ${{ inputs.bitrate }}"
+              ;;
+            "avi")
+              YTDLP_CMD="$YTDLP_CMD -f bestvideo+bestaudio/best --merge-output-format avi"
+              ;;
+            "mkv")
+              YTDLP_CMD="$YTDLP_CMD -f bestvideo+bestaudio/best --merge-output-format mkv"
+              ;;
+          esac
+          
+          # Handle resolution for video formats
+          if [ "${{ inputs.format }}" != "mp3" ] && [ "${{ inputs.format }}" != "mp4 (without Audio)" ]; then
+            if [ "${{ inputs.resolution }}" != "best" ]; then
+              YTDLP_CMD="$YTDLP_CMD -S res:${{ inputs.resolution }}"
+            fi
+          fi
+          
+          # Handle custom filename
+          if [ -n "${{ inputs.filename }}" ]; then
+            YTDLP_CMD="$YTDLP_CMD -o '${{ inputs.filename }}.%(ext)s'"
+          fi
+          
+          # Handle additional yt-dlp arguments
+          if [ -n "${{ inputs.ytdlp_args }}" ]; then
+            YTDLP_CMD="$YTDLP_CMD ${{ inputs.ytdlp_args }}"
+          fi
+          
+          # Add the URL
+          YTDLP_CMD="$YTDLP_CMD '${{ inputs.url }}'"
+          
+          # Show the command
+          echo "Running: $YTDLP_CMD"
+          echo ""
+          
+          # Execute the download
+          eval $YTDLP_CMD
+          
+          # Get the downloaded filename
+          DOWNLOADED_FILE=$(ls -t *.mp4 *.mp3 *.avi *.mkv 2>/dev/null | head -1)
+          echo "downloaded_file=$DOWNLOADED_FILE" >> $GITHUB_OUTPUT
+          
+          if [ -z "$DOWNLOADED_FILE" ]; then
+            echo "No file was downloaded!"
+            exit 1
+          fi
+          
+          echo "Downloaded: $DOWNLOADED_FILE"
 
-      # ── 1. PyInstaller build ─────────────────────────────────
-      - name: PyInstaller build (Linux)
-        run: |
-          python -m PyInstaller \
-            --noconfirm --onedir --windowed --clean --noupx \
-            --icon=icon.png \
-            --exclude-module pycryptodomex.selftest \
-            --exclude-module pycryptodomex.tests \
-            --name "Video Downloader" \
-            main.py
-
-      # ── 2. Zip the portable directory ──────────────────────────
-      - name: Zip portable output (Linux)
-        run: |
-          mkdir -p zip_out
-          cp -r "dist/Video Downloader" "zip_out/Video Downloader"
-          cd zip_out
-          zip -r "../Linux_x64-portable.zip" "Video Downloader"
-
-      - name: Upload artifact (Linux directory)
-        uses: actions/upload-artifact@v4
-        if: contains(github.event.inputs.targets, 'linux') || github.event.inputs.targets == '' || github.event_name == 'release'
-        with:
-          name: VideoDownloader-Linux
-          path: Linux_x64-portable.zip
-
-      # ── 3. AppImage ──────────────────────────────────────────
-      - name: Create AppDir
-        if: contains(github.event.inputs.targets, 'appimage') || github.event.inputs.targets == '' || github.event_name == 'release'
-        run: |
-          APPDIR="AppDir"
-          BIN_SRC="dist/Video Downloader"
-
-          mkdir -p "$APPDIR/usr/bin"
-          mkdir -p "$APPDIR/usr/share/applications"
-          mkdir -p "$APPDIR/usr/share/icons/hicolor/256x256/apps"
-
-          cp -r "$BIN_SRC"/. "$APPDIR/usr/bin/"
-          cp icon.png "$APPDIR/usr/share/icons/hicolor/256x256/apps/video-downloader.png"
-          cp icon.png "$APPDIR/video-downloader.png"
-
-          cat > "$APPDIR/usr/share/applications/video-downloader.desktop" <<EOF
-          [Desktop Entry]
-          Name=Video Downloader
-          Exec=Video Downloader
-          Icon=video-downloader
-          Type=Application
-          Categories=AudioVideo;Network;
-          X-AppImage-Version=${{ github.event.inputs.version || github.ref_name }}
-          EOF
-
-          cat > "$APPDIR/AppRun" <<'EOF'
-          #!/bin/sh
-          HERE="$(dirname "$(readlink -f "$0")")"
-          exec "$HERE/usr/bin/Video Downloader" "$@"
-          EOF
-          chmod +x "$APPDIR/AppRun"
-
-          cp "$APPDIR/usr/share/applications/video-downloader.desktop" "$APPDIR/video-downloader.desktop"
-
-      - name: Build AppImage
-        if: contains(github.event.inputs.targets, 'appimage') || github.event.inputs.targets == '' || github.event_name == 'release'
-        run: |
-          ARCH=x86_64 appimagetool AppDir VideoDownloader-x86_64-${{ github.event.inputs.version || github.ref_name }}.AppImage
-
-      - name: Upload artifact (AppImage)
-        uses: actions/upload-artifact@v4
-        if: contains(github.event.inputs.targets, 'appimage') || github.event.inputs.targets == '' || github.event_name == 'release'
-        with:
-          name: VideoDownloader-AppImage
-          path: VideoDownloader-x86_64-${{ github.event.inputs.version || github.ref_name }}.AppImage
-
-      # ── 4. .deb package ──────────────────────────────────────
-      - name: Create .deb package
-        if: contains(github.event.inputs.targets, 'deb') || github.event.inputs.targets == '' || github.event_name == 'release'
-        run: |
-          PKG="video-downloader_amd64"
-          BIN_SRC="dist/Video Downloader"
-
-          mkdir -p "$PKG/usr/lib/video-downloader"
-          mkdir -p "$PKG/usr/bin"
-          mkdir -p "$PKG/usr/share/applications"
-          mkdir -p "$PKG/usr/share/icons/hicolor/256x256/apps"
-          mkdir -p "$PKG/DEBIAN"
-
-          cp -r "$BIN_SRC"/. "$PKG/usr/lib/video-downloader/"
-
-          cat > "$PKG/usr/bin/video-downloader" <<'EOF'
-          #!/bin/sh
-          exec /usr/lib/video-downloader/"Video Downloader" "$@"
-          EOF
-          chmod +x "$PKG/usr/bin/video-downloader"
-
-          cp icon.png "$PKG/usr/share/icons/hicolor/256x256/apps/video-downloader.png"
-
-          cat > "$PKG/usr/share/applications/video-downloader.desktop" <<EOF
-          [Desktop Entry]
-          Name=Video Downloader
-          Exec=video-downloader
-          Icon=video-downloader
-          Type=Application
-          Categories=AudioVideo;Network;
-          EOF
-
-          cat > "$PKG/DEBIAN/control" <<EOF
-          Package: video-downloader
-          Version: ${{ github.event.inputs.version || github.ref_name }}
-          Architecture: amd64
-          Maintainer: truelockmc
-          Description: GUI & CLI video downloader powered by yt-dlp
-          Depends: libgl1, libegl1, libdbus-1-3, libxkbcommon-x11-0
-          EOF
-
-          dpkg-deb --build --root-owner-group "$PKG"
-
-      - name: Upload artifact (.deb)
-        uses: actions/upload-artifact@v4
-        if: contains(github.event.inputs.targets, 'deb') || github.event.inputs.targets == '' || github.event_name == 'release'
-        with:
-          name: VideoDownloader-deb
-          path: "*.deb"
-
-      # ── 5. Upload to release ──────────────────────────────────
-      - name: Upload Linux directory to release
-        if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && github.event.inputs.upload_to_release == 'true')
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ github.event.release.upload_url }}
-          asset_path: Linux_x64-portable.zip
-          asset_name: VideoDownloader-Linux-x64-${{ github.event.inputs.version || github.ref_name }}.zip
-          asset_content_type: application/zip
-
-      - name: Upload AppImage to release
-        if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && github.event.inputs.upload_to_release == 'true')
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ github.event.release.upload_url }}
-          asset_path: VideoDownloader-x86_64-${{ github.event.inputs.version || github.ref_name }}.AppImage
-          asset_name: VideoDownloader-x86_64-${{ github.event.inputs.version || github.ref_name }}.AppImage
-          asset_content_type: application/x-executable
-
-      - name: Upload .deb to release
-        if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && github.event.inputs.upload_to_release == 'true')
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ github.event.release.upload_url }}
-          asset_path: video-downloader_amd64.deb
-          asset_name: video-downloader_${{ github.event.inputs.version || github.ref_name }}_amd64.deb
-          asset_content_type: application/vnd.debian.binary-package
-
-  # ──────────────────────────────────────────────────────────────
-  # JOB: build-mac-arm64
-  # ──────────────────────────────────────────────────────────────
-  build-mac-arm64:
-    name: Build macOS Apple Silicon (arm64)
-    runs-on: macos-latest
-    if: |
-      (github.event_name == 'workflow_dispatch' && (contains(github.event.inputs.targets, 'mac') || github.event.inputs.targets == '')) ||
-      (github.event_name == 'release')
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Get current week (for cache rotation)
-        id: date
-        run: echo "week=$(date +'%Y-%V')" >> $GITHUB_OUTPUT
-
-      - name: Cache pip (macOS arm64)
-        uses: actions/cache@v4
-        with:
-          path: ~/Library/Caches/pip
-          key: pip-mac-arm64-${{ hashFiles('requirements.txt') }}-${{ steps.date.outputs.week }}
-          restore-keys: |
-            pip-mac-arm64-${{ hashFiles('requirements.txt') }}-
-            pip-mac-arm64-
-
-      - name: Cache PyInstaller (macOS arm64)
-        uses: actions/cache@v4
-        with:
-          path: ~/Library/Application Support/pyinstaller
-          key: pyinstaller-mac-arm64-py3.12-${{ hashFiles('requirements.txt') }}
-          restore-keys: pyinstaller-mac-arm64-py3.12-
-
-      - name: Install Python dependencies
-        run: |
-          pip install --upgrade pip
-          pip install -r requirements.txt pyinstaller pillow
-
-      - name: Build .app bundle (arm64)
-        run: |
-          python -m PyInstaller \
-            --noconfirm --onedir --windowed --clean --noupx \
-            --icon=icon.png \
-            --exclude-module pycryptodomex.selftest \
-            --exclude-module pycryptodomex.tests \
-            --target-arch arm64 \
-            --name "Video Downloader" \
-            main.py
-
-      - name: Zip portable output (ditto)
-        run: |
-          ditto -c -k --sequesterRsrc --keepParent \
-            "dist/Video Downloader.app" \
-            "macOS_arm64-portable.zip"
-
-      - name: Upload artifact (macOS arm64)
+      - name: Upload video as artifact
         uses: actions/upload-artifact@v4
         with:
-          name: VideoDownloader-macOS-arm64
-          path: macOS_arm64-portable.zip
+          name: downloaded-video
+          path: ${{ steps.download.outputs.downloaded_file }}
+          if-no-files-found: error
 
-      - name: Upload to release (macOS arm64)
-        if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && github.event.inputs.upload_to_release == 'true')
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ github.event.release.upload_url }}
-          asset_path: macOS_arm64-portable.zip
-          asset_name: VideoDownloader-macOS-arm64-${{ github.event.inputs.version || github.ref_name }}.zip
-          asset_content_type: application/zip
-
-  # ──────────────────────────────────────────────────────────────
-  # JOB: build-mac-x86_64
-  # ──────────────────────────────────────────────────────────────
-  build-mac-x86_64:
-    name: Build macOS Intel (x86_64)
-    runs-on: macos-15-intel
-    if: |
-      (github.event_name == 'workflow_dispatch' && (contains(github.event.inputs.targets, 'mac') || github.event.inputs.targets == '')) ||
-      (github.event_name == 'release')
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Get current week (for cache rotation)
-        id: date
-        run: echo "week=$(date +'%Y-%V')" >> $GITHUB_OUTPUT
-
-      - name: Cache pip (macOS x86_64)
-        uses: actions/cache@v4
-        with:
-          path: ~/Library/Caches/pip
-          key: pip-mac-x86_64-${{ hashFiles('requirements.txt') }}-${{ steps.date.outputs.week }}
-          restore-keys: |
-            pip-mac-x86_64-${{ hashFiles('requirements.txt') }}-
-            pip-mac-x86_64-
-
-      - name: Cache PyInstaller (macOS x86_64)
-        uses: actions/cache@v4
-        with:
-          path: ~/Library/Application Support/pyinstaller
-          key: pyinstaller-mac-x86_64-py3.12-${{ hashFiles('requirements.txt') }}
-          restore-keys: pyinstaller-mac-x86_64-py3.12-
-
-      - name: Install Python dependencies
+      - name: Show download information
+        if: always()
         run: |
-          pip install --upgrade pip
-          pip install -r requirements.txt pyinstaller pillow
+          echo "## Video Download Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Parameter | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| URL | ${{ inputs.url }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Format | ${{ inputs.format }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Resolution | ${{ inputs.resolution }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Bitrate | ${{ inputs.bitrate }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Filename | ${{ inputs.filename || 'Auto-generated' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Playlist | ${{ inputs.download_playlist }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Download Artifact" >> $GITHUB_STEP_SUMMARY
+          echo "The downloaded video is available in the **Artifacts** section below." >> $GITHUB_STEP_SUMMARY
+          
+          if [ -f "${{ steps.download.outputs.downloaded_file }}" ]; then
+            FILE_SIZE=$(du -h "${{ steps.download.outputs.downloaded_file }}" | cut -f1)
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**File:** ${{ steps.download.outputs.downloaded_file }}" >> $GITHUB_STEP_SUMMARY
+            echo "**Size:** $FILE_SIZE" >> $GITHUB_STEP_SUMMARY
+          fi
 
-      - name: Build .app bundle (x86_64)
-        run: |
-          python -m PyInstaller \
-            --noconfirm --onedir --windowed --clean --noupx \
-            --icon=icon.png \
-            --exclude-module pycryptodomex.selftest \
-            --exclude-module pycryptodomex.tests \
-            --target-arch x86_64 \
-            --name "Video Downloader" \
-            main.py
-
-      - name: Zip portable output (ditto)
-        run: |
-          ditto -c -k --sequesterRsrc --keepParent \
-            "dist/Video Downloader.app" \
-            "macOS_x86_64-portable.zip"
-
-      - name: Upload artifact (macOS x86_64)
-        uses: actions/upload-artifact@v4
-        with:
-          name: VideoDownloader-macOS-x86_64
-          path: macOS_x86_64-portable.zip
-
-      - name: Upload to release (macOS x86_64)
-        if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && github.event.inputs.upload_to_release == 'true')
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ github.event.release.upload_url }}
-          asset_path: macOS_x86_64-portable.zip
-          asset_name: VideoDownloader-macOS-x86_64-${{ github.event.inputs.version || github.ref_name }}.zip
-          asset_content_type: application/zip
-
-  # ──────────────────────────────────────────────────────────────
-  # JOB: summary
-  # ──────────────────────────────────────────────────────────────
-  summary:
-    name: Build Summary
+  # Alternative: Download via custom Python script (more robust)
+  download-via-python:
+    name: Download Video (Python Script)
     runs-on: ubuntu-latest
-    needs: [build-windows, build-linux, build-mac-arm64, build-mac-x86_64]
-    if: always()
+    needs: [download-video]
+    if: failure()
+    
     steps:
-      - name: Display build status
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
         run: |
-          echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Platform | Status | Artifact |" >> $GITHUB_STEP_SUMMARY
-          echo "|----------|--------|----------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Windows | ${{ needs.build-windows.result }} | VideoDownloader-Windows |" >> $GITHUB_STEP_SUMMARY
-          echo "| Linux | ${{ needs.build-linux.result }} | VideoDownloader-Linux, VideoDownloader-AppImage, VideoDownloader-deb |" >> $GITHUB_STEP_SUMMARY
-          echo "| macOS (arm64) | ${{ needs.build-mac-arm64.result }} | VideoDownloader-macOS-arm64 |" >> $GITHUB_STEP_SUMMARY
-          echo "| macOS (x86_64) | ${{ needs.build-mac-x86_64.result }} | VideoDownloader-macOS-x86_64 |" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Download Artifacts" >> $GITHUB_STEP_SUMMARY
-          echo "All artifacts are available in the **Artifacts** section below." >> $GITHUB_STEP_SUMMARY
+          sudo apt-get update -y
+          sudo apt-get install -y ffmpeg
+          pip install --upgrade pip
+          pip install yt-dlp requests
+
+      - name: Create download script
+        run: |
+          cat > download_video.py << 'EOF'
+          import os
+          import sys
+          import yt_dlp
+          
+          url = sys.argv[1] if len(sys.argv) > 1 else ""
+          fmt = sys.argv[2] if len(sys.argv) > 2 else "mp4 (with Audio)"
+          resolution = sys.argv[3] if len(sys.argv) > 3 else "best"
+          bitrate = sys.argv[4] if len(sys.argv) > 4 else "192"
+          filename = sys.argv[5] if len(sys.argv) > 5 else ""
+          playlist = sys.argv[6] if len(sys.argv) > 6 else "false"
+          
+          ydl_opts = {
+              'quiet': False,
+              'no_warnings': False,
+              'ignoreerrors': True,
+          }
+          
+          # Handle playlist
+          ydl_opts['noplaylist'] = playlist != 'true'
+          
+          # Handle format
+          if fmt == "mp4 (with Audio)":
+              ydl_opts['format'] = 'bestvideo+bestaudio/best'
+              ydl_opts['merge_output_format'] = 'mp4'
+          elif fmt == "mp4 (without Audio)":
+              ydl_opts['format'] = 'bestvideo'
+              ydl_opts['merge_output_format'] = 'mp4'
+          elif fmt == "mp3":
+              ydl_opts['format'] = 'bestaudio'
+              ydl_opts['postprocessors'] = [{
+                  'key': 'FFmpegExtractAudio',
+                  'preferredcodec': 'mp3',
+                  'preferredquality': bitrate,
+              }]
+          elif fmt == "avi":
+              ydl_opts['format'] = 'bestvideo+bestaudio/best'
+              ydl_opts['merge_output_format'] = 'avi'
+          elif fmt == "mkv":
+              ydl_opts['format'] = 'bestvideo+bestaudio/best'
+              ydl_opts['merge_output_format'] = 'mkv'
+          
+          # Handle resolution
+          if resolution != "best" and fmt != "mp3":
+              ydl_opts['format'] = ydl_opts['format'] + f"[height<={resolution}]"
+          
+          # Handle filename
+          if filename:
+              ydl_opts['outtmpl'] = f'{filename}.%(ext)s'
+          
+          try:
+              with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                  ydl.download([url])
+              print("Download completed successfully!")
+          except Exception as e:
+              print(f"Error: {e}")
+              sys.exit(1)
+          EOF
+
+      - name: Download video using Python
+        id: python_download
+        run: |
+          python download_video.py \
+            "${{ inputs.url }}" \
+            "${{ inputs.format }}" \
+            "${{ inputs.resolution }}" \
+            "${{ inputs.bitrate }}" \
+            "${{ inputs.filename }}" \
+            "${{ inputs.download_playlist }}"
+          
+          DOWNLOADED_FILE=$(ls -t *.mp4 *.mp3 *.avi *.mkv 2>/dev/null | head -1)
+          echo "downloaded_file=$DOWNLOADED_FILE" >> $GITHUB_OUTPUT
+
+      - name: Upload video
+        uses: actions/upload-artifact@v4
+        with:
+          name: downloaded-video-python
+          path: ${{ steps.python_download.outputs.downloaded_file }}
+          if-no-files-found: error
