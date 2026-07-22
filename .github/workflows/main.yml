@@ -1,27 +1,125 @@
-name: YouTube Downloader (Docker)
+name: YouTube Video Downloader
 
 on:
   workflow_dispatch:
     inputs:
-      url:
-        description: 'YouTube URL'
+      video_url:
+        description: 'YouTube Video URL'
         required: true
         type: string
+        placeholder: 'https://www.youtube.com/watch?v=...'
+      
+      quality:
+        description: 'Quality'
+        required: false
+        default: 'best'
+        type: choice
+        options:
+          - best
+          - 1080p
+          - 720p
+          - 480p
+          - audio-only
 
 jobs:
   download:
     runs-on: ubuntu-latest
-    container:
-      image: mikenye/youtube-dl:latest
+    timeout-minutes: 15
     
     steps:
-      - name: Download video
+      - name: Install yt-dlp
         run: |
-          mkdir -p /github/workspace/downloads
-          youtube-dl -f best -o "/github/workspace/downloads/video.%(ext)s" "${{ github.event.inputs.url }}"
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg python3-pip
+          pip3 install --upgrade yt-dlp
+          
+      - name: Download video with multiple fallbacks
+        id: download
+        continue-on-error: true
+        run: |
+          mkdir -p downloads
+          
+          URL="${{ github.event.inputs.video_url }}"
+          QUALITY="${{ github.event.inputs.quality }}"
+          
+          echo "🎬 Downloading: $URL"
+          
+          # Set quality filter
+          case "$QUALITY" in
+            "1080p") QUALITY_FILTER="bestvideo[height<=1080]+bestaudio/best[height<=1080]" ;;
+            "720p")  QUALITY_FILTER="bestvideo[height<=720]+bestaudio/best[height<=720]" ;;
+            "480p")  QUALITY_FILTER="bestvideo[height<=480]+bestaudio/best[height<=480]" ;;
+            "audio-only") QUALITY_FILTER="bestaudio" ;;
+            *)       QUALITY_FILTER="bestvideo+bestaudio/best" ;;
+          esac
+          
+          # Try Method 1: Android client (best for bypassing bot detection)
+          echo "📱 Method 1: Android client..."
+          if [ "$QUALITY" == "audio-only" ]; then
+            yt-dlp \
+              --user-agent "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36" \
+              --extractor-args "youtube:player_client=android_embedded" \
+              --extractor-args "youtube:skip=webpage,player_js" \
+              -f bestaudio \
+              --extract-audio \
+              --audio-format mp3 \
+              -o "downloads/video.%(ext)s" \
+              "$URL" && SUCCESS=1 || SUCCESS=0
+          else
+            yt-dlp \
+              --user-agent "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36" \
+              --extractor-args "youtube:player_client=android_embedded" \
+              --extractor-args "youtube:skip=webpage,player_js" \
+              -f "$QUALITY_FILTER" \
+              --merge-output-format mp4 \
+              -o "downloads/video.%(ext)s" \
+              "$URL" && SUCCESS=1 || SUCCESS=0
+          fi
+          
+          # If failed, try Method 2: Web client
+          if [ $SUCCESS -eq 0 ]; then
+            echo "🌐 Method 2: Web client..."
+            yt-dlp \
+              --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+              --extractor-args "youtube:player_client=web" \
+              -f "best[ext=mp4]" \
+              -o "downloads/video.%(ext)s" \
+              "$URL" && SUCCESS=1 || SUCCESS=0
+          fi
+          
+          # If still failed, try Method 3: Simplest
+          if [ $SUCCESS -eq 0 ]; then
+            echo "🔄 Method 3: Simple download..."
+            yt-dlp -f best -o "downloads/video.%(ext)s" "$URL" || true
+          fi
+          
+          # Get filename
+          FILE=$(ls -t downloads/ 2>/dev/null | head -n1)
+          if [ -n "$FILE" ]; then
+            echo "file=$FILE" >> $GITHUB_OUTPUT
+            echo "✅ Downloaded: $FILE"
+            ls -lh "downloads/$FILE"
+          else
+            echo "❌ No file downloaded"
+          fi
       
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: video
+          name: youtube-download
           path: downloads/
+          retention-days: 7
+          if-no-files-found: warn
+      
+      - name: Show result
+        if: always()
+        run: |
+          if [ -f "downloads/${{ steps.download.outputs.file }}" ]; then
+            SIZE=$(du -h "downloads/${{ steps.download.outputs.file }}" | cut -f1)
+            echo "✅ Download successful!"
+            echo "📁 File: ${{ steps.download.outputs.file }}"
+            echo "📊 Size: $SIZE"
+          else
+            echo "❌ Download failed. Please check the logs."
+            echo "Try using a different URL or check if the video is available."
+          fi
