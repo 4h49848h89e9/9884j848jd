@@ -1,4 +1,4 @@
-name: Video Downloader - GitHub Actions
+name: Video Downloader - Run Inside GitHub Actions
 
 on:
   workflow_dispatch:
@@ -27,10 +27,6 @@ on:
         description: "Download folder"
         required: false
         default: "downloads"
-      use_cli:
-        description: "Use CLI mode (true/false)"
-        required: false
-        default: "true"
       download_playlist:
         description: "Download entire playlist (true/false)"
         required: false
@@ -38,12 +34,12 @@ on:
 
 jobs:
   download-video:
-    name: Download Video
+    name: Download Video Using Video Downloader
     runs-on: ubuntu-latest
     
     steps:
       # ────────────────────────────────────────────────────────────
-      # 1. Clone repository with all code
+      # 1. Clone repository (contains your full code)
       # ────────────────────────────────────────────────────────────
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -57,7 +53,7 @@ jobs:
           python-version: "3.12"
 
       # ────────────────────────────────────────────────────────────
-      # 3. Install FFmpeg (required for merging audio/video)
+      # 3. Install FFmpeg (required for the downloader)
       # ────────────────────────────────────────────────────────────
       - name: Install FFmpeg
         run: |
@@ -66,14 +62,17 @@ jobs:
 
       # ────────────────────────────────────────────────────────────
       # 4. Install Deno (required for YouTube format extraction)
+      #    The downloader uses Deno for full format support
       # ────────────────────────────────────────────────────────────
       - name: Install Deno
         run: |
           curl -fsSL https://deno.land/install.sh | sh
           echo "$HOME/.deno/bin" >> $GITHUB_PATH
+          deno --version
 
       # ────────────────────────────────────────────────────────────
       # 5. Install Python dependencies from requirements.txt
+      #    Uses the exact same requirements as your project
       # ────────────────────────────────────────────────────────────
       - name: Install Python dependencies
         run: |
@@ -81,39 +80,47 @@ jobs:
           pip install -r requirements.txt
 
       # ────────────────────────────────────────────────────────────
-      # 6. Create download directory
+      # 6. Create the download directory
       # ────────────────────────────────────────────────────────────
       - name: Create download directory
         run: mkdir -p ${{ github.event.inputs.folder }}
 
       # ────────────────────────────────────────────────────────────
-      # 7. Build CLI arguments
+      # 7. Build CLI command using your exact main.py --cli
+      #    This mimics exactly how you'd run it locally
       # ────────────────────────────────────────────────────────────
       - name: Build CLI command
         id: build_cmd
         run: |
+          # Base command using your CLI
           CMD="python main.py --cli \"${{ github.event.inputs.url }}\""
           
-          if [ "${{ github.event.inputs.format }}" != "" ]; then
+          # Add format if provided
+          if [ -n "${{ github.event.inputs.format }}" ]; then
             CMD="$CMD -f \"${{ github.event.inputs.format }}\""
           fi
           
-          if [ "${{ github.event.inputs.resolution }}" != "" ]; then
+          # Add resolution if provided
+          if [ -n "${{ github.event.inputs.resolution }}" ]; then
             CMD="$CMD -r \"${{ github.event.inputs.resolution }}\""
           fi
           
-          if [ "${{ github.event.inputs.bitrate }}" != "" ]; then
+          # Add bitrate if provided
+          if [ -n "${{ github.event.inputs.bitrate }}" ]; then
             CMD="$CMD -b \"${{ github.event.inputs.bitrate }}\""
           fi
           
-          if [ "${{ github.event.inputs.filename }}" != "" ]; then
+          # Add filename if provided
+          if [ -n "${{ github.event.inputs.filename }}" ]; then
             CMD="$CMD -n \"${{ github.event.inputs.filename }}\""
           fi
           
-          if [ "${{ github.event.inputs.folder }}" != "" ]; then
+          # Add folder
+          if [ -n "${{ github.event.inputs.folder }}" ]; then
             CMD="$CMD -d \"${{ github.event.inputs.folder }}\""
           fi
           
+          # Handle playlist option
           if [ "${{ github.event.inputs.download_playlist }}" == "true" ]; then
             CMD="$CMD -a \"--yes-playlist\""
           else
@@ -124,11 +131,15 @@ jobs:
           echo "📝 Command: $CMD"
 
       # ────────────────────────────────────────────────────────────
-      # 8. Run the video downloader
+      # 8. Run the downloader with your exact code
+      #    This uses your main.py, cli.py, workers.py, utils.py
       # ────────────────────────────────────────────────────────────
-      - name: Download video
+      - name: Download video using Video Downloader
         run: |
-          echo "🚀 Starting download..."
+          echo "🚀 Starting video download..."
+          echo "=========================================="
+          echo "Using your Video Downloader code from this repository"
+          echo "main.py --cli with all your features"
           echo "=========================================="
           eval ${{ steps.build_cmd.outputs.command }}
           echo "=========================================="
@@ -179,13 +190,13 @@ jobs:
           if-no-files-found: warn
 
       # ────────────────────────────────────────────────────────────
-      # 12. Generate summary
+      # 12. Generate detailed summary
       # ────────────────────────────────────────────────────────────
       - name: Generate summary
         run: |
-          echo "## ✅ Video Download Complete!" >> $GITHUB_STEP_SUMMARY
+          echo "# ✅ Video Download Complete!" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### 📊 Download Details" >> $GITHUB_STEP_SUMMARY
+          echo "## 📊 Download Details" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Parameter | Value |" >> $GITHUB_STEP_SUMMARY
           echo "|-----------|-------|" >> $GITHUB_STEP_SUMMARY
@@ -198,12 +209,20 @@ jobs:
           echo "| **File** | ${{ steps.file_info.outputs.filename }} |" >> $GITHUB_STEP_SUMMARY
           echo "| **Size** | ${{ steps.file_info.outputs.size }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### 📥 Download Artifact" >> $GITHUB_STEP_SUMMARY
+          echo "## 📥 Download Artifact" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "The downloaded video is available as a GitHub Actions artifact." >> $GITHUB_STEP_SUMMARY
-          echo "You can download it from the 'Artifacts' section above." >> $GITHUB_STEP_SUMMARY
+          echo "You can download it from the **Artifacts** section above." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 🔧 Technical Details" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Downloader Code**: Uses your exact code from this repository" >> $GITHUB_STEP_SUMMARY
+          echo "- **CLI Mode**: main.py --cli with all your features" >> $GITHUB_STEP_SUMMARY
+          echo "- **FFmpeg**: Installed for audio/video merging" >> $GITHUB_STEP_SUMMARY
+          echo "- **Deno**: Installed for full YouTube format support" >> $GITHUB_STEP_SUMMARY
+          echo "- **yt-dlp**: Your version from requirements.txt" >> $GITHUB_STEP_SUMMARY
           
-          # Also add to console output
+          # Console output
           echo ""
           echo "=========================================="
           echo "✅ DOWNLOAD COMPLETE!"
@@ -214,7 +233,7 @@ jobs:
           echo "=========================================="
 
   # ────────────────────────────────────────────────────────────
-  # Optional: Notify on completion
+  # Optional: Notification job
   # ────────────────────────────────────────────────────────────
   notify:
     name: Send Notification
@@ -226,8 +245,11 @@ jobs:
         run: |
           if [ "${{ needs.download-video.result }}" == "success" ]; then
             echo "✅ Download job completed successfully!"
-            echo "🎉 Video download finished in GitHub Actions"
+            echo "🎉 Video downloaded using your Video Downloader in GitHub Actions"
+            echo ""
+            echo "The downloaded file is available in the Artifacts section."
           else
             echo "❌ Download job failed!"
-            echo "⚠️ There was an error during the download process"
+            echo "⚠️ There was an error during the download process."
+            echo "Check the logs above for details."
           fi
