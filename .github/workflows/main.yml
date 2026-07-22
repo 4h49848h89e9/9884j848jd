@@ -1,4 +1,4 @@
-name: YouTube Downloader (No Cookies - Complete)
+name: YouTube Downloader (All Qualities)
 
 on:
   workflow_dispatch:
@@ -7,78 +7,256 @@ on:
         description: 'YouTube Video URL'
         required: true
         type: string
+        placeholder: 'https://www.youtube.com/watch?v=...'
+      
       format:
-        description: 'Format'
+        description: 'Download Format'
         required: false
         default: 'mp4'
         type: choice
         options:
           - mp4
           - mp3
+          - webm
+          - mkv
+      
+      quality:
+        description: 'Video Quality'
+        required: false
+        default: 'best'
+        type: choice
+        options:
+          - best (Auto)
+          - 2160p (4K)
+          - 1440p (2K)
+          - 1080p (Full HD)
+          - 720p (HD)
+          - 480p (SD)
+          - 360p
+          - 240p
+          - 144p
+          - audio-only (MP3)
 
 jobs:
   download:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     
     steps:
-      - name: Install tools
+      - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg python3-pip
+          sudo apt-get install -y ffmpeg python3-pip jq
           pip3 install yt-dlp
       
-      - name: Download with multiple methods
+      - name: Download YouTube Video (All Qualities)
         id: download
         continue-on-error: true
         run: |
           mkdir -p downloads
           URL="${{ github.event.inputs.video_url }}"
           FORMAT="${{ github.event.inputs.format }}"
+          QUALITY="${{ github.event.inputs.quality }}"
           
-          # Method A: Try yt-dlp first
-          echo "📥 Method A: yt-dlp"
-          if yt-dlp \
-            --extractor-args "youtube:player_client=android_embedded" \
-            --extractor-args "youtube:skip=webpage,player_js" \
-            --user-agent "Mozilla/5.0 (Linux; Android 13)" \
-            --no-check-certificate \
-            -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" \
-            --merge-output-format mp4 \
-            -o "downloads/video.%(ext)s" \
-            "$URL" 2>/dev/null; then
-            echo "✅ Method A succeeded"
-          else
-            echo "⚠️ Method A failed, trying Method B..."
-            
-            # Method B: Try with web client
+          echo "🎬 Downloading: $URL"
+          echo "📁 Format: $FORMAT"
+          echo "📊 Quality: $QUALITY"
+          
+          # Map quality to filters
+          case "$QUALITY" in
+            "best (Auto)")
+              QUALITY_FILTER="bestvideo+bestaudio/best"
+              ;;
+            "2160p (4K)")
+              QUALITY_FILTER="bestvideo[height<=2160][ext=mp4]+bestaudio[ext=m4a]/best[height<=2160]"
+              ;;
+            "1440p (2K)")
+              QUALITY_FILTER="bestvideo[height<=1440][ext=mp4]+bestaudio[ext=m4a]/best[height<=1440]"
+              ;;
+            "1080p (Full HD)")
+              QUALITY_FILTER="bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080]"
+              ;;
+            "720p (HD)")
+              QUALITY_FILTER="bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720]"
+              ;;
+            "480p (SD)")
+              QUALITY_FILTER="bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480]"
+              ;;
+            "360p")
+              QUALITY_FILTER="bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/best[height<=360]"
+              ;;
+            "240p")
+              QUALITY_FILTER="bestvideo[height<=240][ext=mp4]+bestaudio[ext=m4a]/best[height<=240]"
+              ;;
+            "144p")
+              QUALITY_FILTER="bestvideo[height<=144][ext=mp4]+bestaudio[ext=m4a]/best[height<=144]"
+              ;;
+            "audio-only (MP3)")
+              QUALITY_FILTER="bestaudio"
+              ;;
+            *)
+              QUALITY_FILTER="bestvideo+bestaudio/best"
+              ;;
+          esac
+          
+          echo "🔧 Using filter: $QUALITY_FILTER"
+          
+          # Download using yt-dlp first (best quality control)
+          if [ "$QUALITY" == "audio-only (MP3)" ] || [ "$FORMAT" == "mp3" ]; then
+            echo "🎵 Downloading audio only..."
             yt-dlp \
-              --extractor-args "youtube:player_client=web" \
-              --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" \
-              -f "best[ext=mp4]" \
+              --extractor-args "youtube:player_client=android_embedded" \
+              --extractor-args "youtube:skip=webpage,player_js" \
+              --user-agent "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36" \
+              --no-check-certificate \
+              --sleep-interval 2 \
+              --max-sleep-interval 5 \
+              -f bestaudio \
+              --extract-audio \
+              --audio-format mp3 \
+              --audio-quality 0 \
               -o "downloads/video.%(ext)s" \
-              "$URL" 2>/dev/null || \
-            echo "⚠️ Method B failed, trying Method C..."
+              "$URL" 2>/dev/null && SUCCESS=1 || SUCCESS=0
+          else
+            echo "🎬 Downloading video with quality: $QUALITY"
             
-            # Method C: Try API
-            if [ "$FORMAT" == "mp3" ]; then
-              curl -L "https://api.vevioz.com/api/button/mp3/$URL" -o downloads/video.mp3 2>/dev/null
-            else
-              curl -L "https://api.vevioz.com/api/button/mp4/$URL" -o downloads/video.mp4 2>/dev/null
+            # Try Method 1: yt-dlp with android client
+            yt-dlp \
+              --extractor-args "youtube:player_client=android_embedded" \
+              --extractor-args "youtube:skip=webpage,player_js" \
+              --user-agent "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36" \
+              --no-check-certificate \
+              --sleep-interval 2 \
+              --max-sleep-interval 5 \
+              -f "$QUALITY_FILTER" \
+              --merge-output-format "$FORMAT" \
+              -o "downloads/video.%(ext)s" \
+              "$URL" 2>/dev/null && SUCCESS=1 || SUCCESS=0
+              
+            # If failed, try Method 2: web client
+            if [ $SUCCESS -eq 0 ]; then
+              echo "⚠️ Method 1 failed, trying Method 2..."
+              yt-dlp \
+                --extractor-args "youtube:player_client=web" \
+                --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+                -f "$QUALITY_FILTER" \
+                --merge-output-format "$FORMAT" \
+                -o "downloads/video.%(ext)s" \
+                "$URL" 2>/dev/null && SUCCESS=1 || SUCCESS=0
             fi
           fi
           
-          # Get filename
+          # If all yt-dlp methods fail, try free APIs
+          if [ $SUCCESS -eq 0 ]; then
+            echo "⚠️ yt-dlp failed, trying free APIs..."
+            
+            ENCODED_URL=$(echo "$URL" | sed 's/&/%26/g' | sed 's/?/%3F/g')
+            
+            # Try different APIs based on quality
+            if [ "$QUALITY" == "audio-only (MP3)" ] || [ "$FORMAT" == "mp3" ]; then
+              curl -L -o downloads/video.mp3 \
+                "https://api.vevioz.com/api/button/mp3/$URL" 2>/dev/null || \
+              curl -L -o downloads/video.mp3 \
+                "https://yt-api.com/api/audio?url=$ENCODED_URL" 2>/dev/null || \
+              curl -L -o downloads/video.mp3 \
+                "https://youtube-mp3-api.com/api/convert?url=$ENCODED_URL" 2>/dev/null
+            else
+              # Map quality to API parameter
+              case "$QUALITY" in
+                "2160p (4K)")   API_QUALITY="2160" ;;
+                "1440p (2K)")   API_QUALITY="1440" ;;
+                "1080p (Full HD)") API_QUALITY="1080" ;;
+                "720p (HD)")    API_QUALITY="720" ;;
+                "480p (SD)")    API_QUALITY="480" ;;
+                "360p")         API_QUALITY="360" ;;
+                "240p")         API_QUALITY="240" ;;
+                "144p")         API_QUALITY="144" ;;
+                *)              API_QUALITY="best" ;;
+              esac
+              
+              echo "📥 Trying API with quality: $API_QUALITY"
+              
+              curl -L -o downloads/video.mp4 \
+                "https://api.vevioz.com/api/button/mp4/$URL?quality=$API_QUALITY" 2>/dev/null || \
+              curl -L -o downloads/video.mp4 \
+                "https://yt-api.com/api/video?url=$ENCODED_URL&quality=$API_QUALITY" 2>/dev/null || \
+              curl -L -o downloads/video.mp4 \
+                "https://youtube-mp4-api.com/api/convert?url=$ENCODED_URL&quality=$API_QUALITY" 2>/dev/null || \
+              curl -L -o downloads/video.mp4 \
+                "https://ssyoutube.com/api/convert?url=$ENCODED_URL&quality=$API_QUALITY" 2>/dev/null
+            fi
+          fi
+          
+          # Get downloaded file info
           FILE=$(ls -t downloads/ 2>/dev/null | head -n1)
-          if [ -n "$FILE" ]; then
+          if [ -n "$FILE" ] && [ -s "downloads/$FILE" ]; then
+            SIZE=$(du -h "downloads/$FILE" | cut -f1)
+            echo "✅ Download successful!"
+            echo "📁 File: $FILE"
+            echo "📊 Size: $SIZE"
             echo "file=$FILE" >> $GITHUB_OUTPUT
-            echo "✅ Downloaded: $FILE"
-            ls -lh "downloads/$FILE"
+            
+            # Get video info if possible
+            if command -v ffprobe &> /dev/null; then
+              DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "downloads/$FILE" 2>/dev/null)
+              if [ -n "$DURATION" ]; then
+                echo "⏱️ Duration: $(date -d@$DURATION -u +%H:%M:%S)"
+              fi
+            fi
+          else
+            echo "❌ Download failed"
+          fi
+      
+      - name: Get video metadata
+        if: success()
+        run: |
+          if [ -f "downloads/${{ steps.download.outputs.file }}" ]; then
+            echo "📋 Video Information:"
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━"
+            ls -lh "downloads/${{ steps.download.outputs.file }}"
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━"
+            
+            # Check if it's video or audio
+            if [[ "${{ steps.download.outputs.file }}" == *.mp4 ]] || [[ "${{ steps.download.outputs.file }}" == *.webm ]]; then
+              echo "🎬 Video file ready"
+            elif [[ "${{ steps.download.outputs.file }}" == *.mp3 ]]; then
+              echo "🎵 Audio file ready"
+            fi
           fi
       
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: youtube-download
+          name: youtube-download-${{ github.run_id }}
           path: downloads/
           retention-days: 7
+          if-no-files-found: warn
+      
+      - name: Show result
+        if: always()
+        run: |
+          echo ""
+          echo "╔════════════════════════════════════════╗"
+          echo "║        DOWNLOAD RESULT                 ║"
+          echo "╚════════════════════════════════════════╝"
+          echo ""
+          
+          if [ -f "downloads/${{ steps.download.outputs.file }}" ]; then
+            SIZE=$(du -h "downloads/${{ steps.download.outputs.file }}" | cut -f1)
+            echo "✅ STATUS: SUCCESS"
+            echo "📁 FILE: ${{ steps.download.outputs.file }}"
+            echo "📊 SIZE: $SIZE"
+            echo "📥 Download from: Artifacts section"
+            echo ""
+            echo "Quality: ${{ github.event.inputs.quality }}"
+            echo "Format: ${{ github.event.inputs.format }}"
+          else
+            echo "❌ STATUS: FAILED"
+            echo ""
+            echo "💡 Troubleshooting:"
+            echo "   1. Check if the URL is correct"
+            echo "   2. Video might be private or age-restricted"
+            echo "   3. Try using cookies method"
+            echo "   4. Try a different URL"
+            echo "   5. Wait a few minutes and try again (rate limit)"
+          fi
