@@ -74,7 +74,8 @@ jobs:
       # ────────────────────────────────────────────────────────────
       - name: Verify Deno
         run: |
-          deno --version
+          echo "Deno version:"
+          deno --version || echo "Deno not available"
         shell: bash
 
       # ────────────────────────────────────────────────────────────
@@ -84,6 +85,7 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
+          pip install pyinstaller pillow
 
       # ────────────────────────────────────────────────────────────
       # 7. Create download directory
@@ -132,37 +134,64 @@ jobs:
         shell: bash
 
       # ────────────────────────────────────────────────────────────
-      # 9. Run the downloader
+      # 9. Run the downloader with debugging
       # ────────────────────────────────────────────────────────────
       - name: Download video
         run: |
           echo "🚀 Starting video download..."
           echo "=========================================="
-          echo "Using your Video Downloader code"
+          echo "Current directory: $(pwd)"
+          echo "Files in current directory:"
+          ls -la
+          echo "=========================================="
           echo "Python: $(which python)"
-          echo "Python version: $(python --version)"
+          echo "Python version: $(python --version 2>&1)"
           echo "FFmpeg: $(which ffmpeg)"
-          echo "Deno: $(which deno || echo 'Deno not in PATH')"
+          echo "FFmpeg version: $(ffmpeg -version 2>&1 | head -1)"
+          echo "Deno: $(which deno 2>/dev/null || echo 'Deno not in PATH')"
           echo "Deno version: $(deno --version 2>/dev/null || echo 'Deno not available')"
           echo "=========================================="
-          eval ${{ steps.build_cmd.outputs.command }}
+          echo "Running command:"
+          echo "${{ steps.build_cmd.outputs.command }}"
           echo "=========================================="
-          echo "✅ Download completed!"
+          
+          # Run the command with error handling
+          if eval ${{ steps.build_cmd.outputs.command }}; then
+            echo "✅ Download completed successfully!"
+          else
+            echo "❌ Download failed with exit code: $?"
+            echo "Checking for partial downloads..."
+            if [ -d "${{ github.event.inputs.folder }}" ]; then
+              ls -la ${{ github.event.inputs.folder }}/
+            fi
+            exit 1
+          fi
+          
+          echo "=========================================="
         shell: bash
+        continue-on-error: true
 
       # ────────────────────────────────────────────────────────────
       # 10. List downloaded files
       # ────────────────────────────────────────────────────────────
       - name: List downloaded files
+        if: always()
         run: |
           echo "📁 Downloaded files in ${{ github.event.inputs.folder }}:"
-          ls -la ${{ github.event.inputs.folder }}/ || echo "No files found"
+          if [ -d "${{ github.event.inputs.folder }}" ]; then
+            ls -la ${{ github.event.inputs.folder }}/ || echo "No files found"
+            echo "File details:"
+            find ${{ github.event.inputs.folder }} -type f -exec ls -lh {} \;
+          else
+            echo "Download folder doesn't exist"
+          fi
 
       # ────────────────────────────────────────────────────────────
       # 11. Get file info
       # ────────────────────────────────────────────────────────────
       - name: Get file info
         id: file_info
+        if: success() || failure()
         run: |
           if [ -d "${{ github.event.inputs.folder }}" ]; then
             FILE=$(ls -1 ${{ github.event.inputs.folder }}/ 2>/dev/null | head -1)
@@ -187,6 +216,7 @@ jobs:
       # 12. Upload artifact
       # ────────────────────────────────────────────────────────────
       - name: Upload artifact
+        if: success() || failure()
         uses: actions/upload-artifact@v4
         with:
           name: downloaded-video-${{ github.run_id }}
@@ -198,8 +228,9 @@ jobs:
       # 13. Generate summary
       # ────────────────────────────────────────────────────────────
       - name: Generate summary
+        if: always()
         run: |
-          echo "# ✅ Video Download Complete!" >> $GITHUB_STEP_SUMMARY
+          echo "# Video Download Result" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "## 📊 Download Details" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -211,8 +242,11 @@ jobs:
           echo "| **Bitrate** | ${{ github.event.inputs.bitrate }} |" >> $GITHUB_STEP_SUMMARY
           echo "| **Filename** | ${{ github.event.inputs.filename }} |" >> $GITHUB_STEP_SUMMARY
           echo "| **Download Playlist** | ${{ github.event.inputs.download_playlist }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| **File** | ${{ steps.file_info.outputs.filename }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Size** | ${{ steps.file_info.outputs.size }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Status** | ${{ job.status }} |" >> $GITHUB_STEP_SUMMARY
+          if [ -n "${{ steps.file_info.outputs.filename }}" ]; then
+            echo "| **File** | ${{ steps.file_info.outputs.filename }} |" >> $GITHUB_STEP_SUMMARY
+            echo "| **Size** | ${{ steps.file_info.outputs.size }} |" >> $GITHUB_STEP_SUMMARY
+          fi
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "## 📥 Download Artifact" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -221,9 +255,15 @@ jobs:
           
           echo ""
           echo "=========================================="
-          echo "✅ DOWNLOAD COMPLETE!"
+          if [ "${{ job.status }}" == "success" ]; then
+            echo "✅ DOWNLOAD COMPLETE!"
+          else
+            echo "❌ DOWNLOAD FAILED!"
+          fi
           echo "=========================================="
-          echo "📄 File: ${{ steps.file_info.outputs.filename }}"
-          echo "📊 Size: ${{ steps.file_info.outputs.size }}"
+          if [ -n "${{ steps.file_info.outputs.filename }}" ]; then
+            echo "📄 File: ${{ steps.file_info.outputs.filename }}"
+            echo "📊 Size: ${{ steps.file_info.outputs.size }}"
+          fi
           echo "📁 Artifact: downloaded-video-${{ github.run_id }}"
           echo "=========================================="
