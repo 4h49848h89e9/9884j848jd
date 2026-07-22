@@ -1,4 +1,4 @@
-name: Video Downloader - Run Inside GitHub Actions
+name: Video Downloader (fixed)
 
 on:
   workflow_dispatch:
@@ -8,7 +8,7 @@ on:
         required: true
         default: "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
       format:
-        description: "Output format (mp4 (with Audio), mp4 (without Audio), mp3, avi, mkv)"
+        description: "Output format (mp4 (with Audio), mp4 (without Audio), mp3)"
         required: false
         default: "mp4 (with Audio)"
       resolution:
@@ -20,211 +20,122 @@ on:
         required: false
         default: "192"
       filename:
-        description: "Output filename (without extension)"
+        description: "Custom output filename (without extension, leave empty for original title)"
         required: false
-        default: "downloaded_video"
-      folder:
-        description: "Download folder"
-        required: false
-        default: "downloads"
+        default: ""
       download_playlist:
         description: "Download entire playlist (true/false)"
         required: false
         default: "false"
 
 jobs:
-  download-video:
-    name: Download Video Using Video Downloader
+  download:
     runs-on: ubuntu-latest
+    name: Download video with yt-dlp
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Install FFmpeg
+      - name: Install FFmpeg and yt-dlp
         run: |
-          sudo apt-get update -y
-          sudo apt-get install -y ffmpeg
-
-      - name: Verify installations
-        run: |
-          echo "=== Python ==="
-          python --version
-          echo "=== FFmpeg ==="
-          ffmpeg -version | head -1
-
-      - name: Install Python dependencies
-        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
           pip install --upgrade pip
           pip install yt-dlp
-        shell: bash
 
-      - name: Create download directory
-        run: mkdir -p ${{ github.event.inputs.folder }}
+      - name: Prepare download folder
+        run: mkdir -p downloads
 
       - name: Download video
         id: download
         run: |
-          CMD="python main.py --cli \"${{ github.event.inputs.url }}\""
-          if [ -n "${{ github.event.inputs.format }}" ]; then
-            CMD="$CMD -f \"${{ github.event.inputs.format }}\""
-          fi
-          if [ -n "${{ github.event.inputs.resolution }}" ]; then
-            CMD="$CMD -r \"${{ github.event.inputs.resolution }}\""
-          fi
-          if [ -n "${{ github.event.inputs.bitrate }}" ]; then
-            CMD="$CMD -b \"${{ github.event.inputs.bitrate }}\""
-          fi
-          if [ -n "${{ github.event.inputs.filename }}" ]; then
-            CMD="$CMD -n \"${{ github.event.inputs.filename }}\""
-          fi
-          if [ -n "${{ github.event.inputs.folder }}" ]; then
-            CMD="$CMD -d \"${{ github.event.inputs.folder }}\""
-          fi
-          if [ "${{ github.event.inputs.download_playlist }}" == "true" ]; then
-            CMD="$CMD -a \"--yes-playlist\""
+          set -euxo pipefail
+
+          # Read inputs
+          URL="${{ github.event.inputs.url }}"
+          FORMAT="${{ github.event.inputs.format }}"
+          RES="${{ github.event.inputs.resolution }}"
+          BIT="${{ github.event.inputs.bitrate }}"
+          FNAME="${{ github.event.inputs.filename }}"
+          PLAYLIST="${{ github.event.inputs.download_playlist }}"
+          OUTDIR="downloads"
+
+          # Build output template
+          if [ -n "$FNAME" ]; then
+            OUTPUT="${OUTDIR}/${FNAME}.%(ext)s"
           else
-            CMD="$CMD -a \"--no-playlist\""
+            OUTPUT="${OUTDIR}/%(title)s.%(ext)s"
           fi
-          echo "Running: $CMD"
-          eval $CMD
-          DOWNLOAD_EXIT_CODE=$?
-          echo "Exit code: $DOWNLOAD_EXIT_CODE"
-          if [ $DOWNLOAD_EXIT_CODE -eq 0 ]; then
+
+          # Build format options
+          FORMAT_OPTS=""
+          if [ "$FORMAT" = "mp3" ]; then
+            FORMAT_OPTS="-x --audio-format mp3 --audio-quality ${BIT}"
+          elif [ "$FORMAT" = "mp4 (with Audio)" ]; then
+            if [ "$RES" = "best" ]; then
+              FORMAT_OPTS="-f bestvideo+bestaudio"
+            else
+              FORMAT_OPTS="-f 'bestvideo[height<=${RES}]+bestaudio/best[height<=${RES}]'"
+            fi
+          elif [ "$FORMAT" = "mp4 (without Audio)" ]; then
+            if [ "$RES" = "best" ]; then
+              FORMAT_OPTS="-f bestvideo"
+            else
+              FORMAT_OPTS="-f 'bestvideo[height<=${RES}]'"
+            fi
+          else
+            # fallback: just get best
+            FORMAT_OPTS="-f best"
+          fi
+
+          # Playlist option
+          PLAYLIST_OPTS="--no-playlist"
+          if [ "$PLAYLIST" = "true" ]; then
+            PLAYLIST_OPTS="--yes-playlist"
+          fi
+
+          # Execute download
+          echo "Running yt-dlp..."
+          yt-dlp \
+            --no-check-certificates \
+            --ignore-errors \
+            --no-warnings \
+            -o "$OUTPUT" \
+            $FORMAT_OPTS \
+            $PLAYLIST_OPTS \
+            "$URL"
+
+          # Check if files exist
+          echo "Downloaded files:"
+          find downloads -type f -exec ls -lh {} \;
+
+          # Signal success only if at least one file was downloaded
+          if [ "$(find downloads -type f | wc -l)" -gt 0 ]; then
             echo "status=success" >> $GITHUB_OUTPUT
           else
             echo "status=failed" >> $GITHUB_OUTPUT
-            echo "exit_code=$DOWNLOAD_EXIT_CODE" >> $GITHUB_OUTPUT
+            echo "::error::No files were downloaded"
+            exit 1
           fi
         shell: bash
-        continue-on-error: true
-
-      - name: List downloaded files
-        if: always()
-        run: |
-          echo "=== Downloaded files ==="
-          if [ -d "${{ github.event.inputs.folder }}" ]; then
-            ls -la ${{ github.event.inputs.folder }}/ || echo "No files found"
-            find ${{ github.event.inputs.folder }} -type f -exec ls -lh {} \; 2>/dev/null || echo "No files"
-          else
-            echo "Download folder does not exist"
-          fi
 
       - name: Upload artifact
-        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: downloaded-video-${{ github.run_id }}
-          path: ${{ github.event.inputs.folder }}/*
+          name: video-download-${{ github.run_id }}
+          path: downloads/*
           retention-days: 7
-          if-no-files-found: ignore
+          if-no-files-found: error
 
-      - name: Generate summary
+      - name: Summary
         if: always()
         run: |
-          echo "# Video Download Result" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## 📊 Download Details" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Parameter | Value |" >> $GITHUB_STEP_SUMMARY
-          echo "|-----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "# 📥 Download Result" >> $GITHUB_STEP_SUMMARY
+          echo "| **Status** | ${{ steps.download.outputs.status }} |" >> $GITHUB_STEP_SUMMARY
           echo "| **URL** | ${{ github.event.inputs.url }} |" >> $GITHUB_STEP_SUMMARY
           echo "| **Format** | ${{ github.event.inputs.format }} |" >> $GITHUB_STEP_SUMMARY
           echo "| **Resolution** | ${{ github.event.inputs.resolution }} |" >> $GITHUB_STEP_SUMMARY
           echo "| **Bitrate** | ${{ github.event.inputs.bitrate }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Filename** | ${{ github.event.inputs.filename }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Download Playlist** | ${{ github.event.inputs.download_playlist }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Status** | ${{ steps.download.outputs.status || 'unknown' }} |" >> $GITHUB_STEP_SUMMARY
-          if [ -n "${{ steps.download.outputs.exit_code }}" ]; then
-            echo "| **Exit Code** | ${{ steps.download.outputs.exit_code }} |" >> $GITHUB_STEP_SUMMARY
-          fi
-          echo "" >> $GITHUB_STEP_SUMMARY
-          if [ -d "${{ github.event.inputs.folder }}" ]; then
-            FILE_COUNT=$(ls -1 ${{ github.event.inputs.folder }}/ 2>/dev/null | wc -l)
-            if [ $FILE_COUNT -gt 0 ]; then
-              echo "## ✅ Files Downloaded" >> $GITHUB_STEP_SUMMARY
-              echo "" >> $GITHUB_STEP_SUMMARY
-              echo "| File | Size |" >> $GITHUB_STEP_SUMMARY
-              echo "|------|------|" >> $GITHUB_STEP_SUMMARY
-              for f in ${{ github.event.inputs.folder }}/*; do
-                if [ -f "$f" ]; then
-                  SIZE=$(du -h "$f" | cut -f1)
-                  NAME=$(basename "$f")
-                  echo "| $NAME | $SIZE |" >> $GITHUB_STEP_SUMMARY
-                fi
-              done
-            else
-              echo "## ⚠️ No Files Found" >> $GITHUB_STEP_SUMMARY
-              echo "" >> $GITHUB_STEP_SUMMARY
-              echo "The download completed but no files were found in the download folder." >> $GITHUB_STEP_SUMMARY
-            fi
-          else
-            echo "## ❌ Download Folder Missing" >> $GITHUB_STEP_SUMMARY
-          fi
-
-      - name: Fallback - Direct yt-dlp download
-        if: steps.download.outputs.status != 'success'
-        run: |
-          echo "🔄 Main downloader did not succeed, trying direct yt-dlp..."
-          echo "=========================================="
-          pip install yt-dlp
-          YT_CMD="yt-dlp -o \"${{ github.event.inputs.folder }}/%(title)s.%(ext)s\""
-          if [ "${{ github.event.inputs.format }}" == "mp3" ]; then
-            YT_CMD="$YT_CMD -x --audio-format mp3"
-            if [ -n "${{ github.event.inputs.bitrate }}" ]; then
-              YT_CMD="$YT_CMD --audio-quality ${{ github.event.inputs.bitrate }}"
-            fi
-          elif [ "${{ github.event.inputs.format }}" == "mp4 (with Audio)" ]; then
-            if [ "${{ github.event.inputs.resolution }}" != "best" ] && [ -n "${{ github.event.inputs.resolution }}" ]; then
-              YT_CMD="$YT_CMD -f \"bestvideo[height<=${{ github.event.inputs.resolution }}]+bestaudio/best[height<=${{ github.event.inputs.resolution }}]\""
-            else
-              YT_CMD="$YT_CMD -f bestvideo+bestaudio"
-            fi
-          elif [ "${{ github.event.inputs.format }}" == "mp4 (without Audio)" ]; then
-            if [ "${{ github.event.inputs.resolution }}" != "best" ] && [ -n "${{ github.event.inputs.resolution }}" ]; then
-              YT_CMD="$YT_CMD -f \"bestvideo[height<=${{ github.event.inputs.resolution }}]\""
-            else
-              YT_CMD="$YT_CMD -f bestvideo"
-            fi
-          else
-            YT_CMD="$YT_CMD -f best"
-          fi
-          if [ "${{ github.event.inputs.download_playlist }}" == "true" ]; then
-            YT_CMD="$YT_CMD --yes-playlist"
-          else
-            YT_CMD="$YT_CMD --no-playlist"
-          fi
-          echo "Fallback command: $YT_CMD ${{ github.event.inputs.url }}"
-          eval $YT_CMD "${{ github.event.inputs.url }}"
-        shell: bash
-        continue-on-error: true
-
-      - name: List files after fallback
-        if: steps.download.outputs.status != 'success'
-        run: |
-          echo "=== Files after fallback ==="
-          if [ -d "${{ github.event.inputs.folder }}" ]; then
-            ls -la ${{ github.event.inputs.folder }}/ || echo "No files"
-          else
-            echo "Checking current directory:"
-            ls -la *.mp4 *.mp3 *.mkv *.avi 2>/dev/null || echo "No media files found"
-          fi
-
-      - name: Upload fallback artifact
-        if: steps.download.outputs.status != 'success'
-        uses: actions/upload-artifact@v4
-        with:
-          name: fallback-download-${{ github.run_id }}
-          path: |
-            ${{ github.event.inputs.folder }}/*
-            *.mp4
-            *.mp3
-            *.mkv
-            *.avi
-          retention-days: 7
-          if-no-files-found: ignore
