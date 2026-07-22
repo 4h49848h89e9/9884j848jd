@@ -1,240 +1,361 @@
-name: YouTube Downloader (All Qualities - Fixed)
+name: Build Binaries
 
 on:
   workflow_dispatch:
     inputs:
-      video_url:
-        description: 'YouTube Video URL'
+      version:
+        description: "Version string (e.g. 2.2.1)"
         required: true
-        type: string
-        placeholder: 'https://www.youtube.com/watch?v=...'
-      
-      format:
-        description: 'Download Format'
+        default: "0.0.0"
+      targets:
+        description: "Build targets (comma-separated: windows, linux, appimage, deb, mac)"
         required: false
-        default: 'mp4'
-        type: choice
-        options:
-          - mp4
-          - mp3
-      
-      quality:
-        description: 'Video Quality'
-        required: false
-        default: 'best'
-        type: choice
-        options:
-          - best
-          - 1080p
-          - 720p
-          - 480p
-          - 360p
-          - audio-only
+        default: "windows, linux, appimage, deb, mac"
 
 jobs:
-  download:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    
+  # ────────────────────────────────────────────────────────────
+  build-windows:
+    name: Build, Windows (.exe)
+    runs-on: windows-latest
     steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Cache pip packages, invalidates when requirements.txt changes.
+      # yt-dlp updates frequently, so the weekly date segment forces a
+      # fresh install once a week while still saving time on reruns.
+      - name: Cache pip (Windows)
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\pip\Cache
+          key: pip-win-${{ hashFiles('requirements.txt') }}-${{ env.CACHE_WEEK }}
+          restore-keys: |
+            pip-win-${{ hashFiles('requirements.txt') }}-
+            pip-win-
+        env:
+          CACHE_WEEK: ${{ steps.date.outputs.week }}
+
+      - name: Get current week (for cache rotation)
+        id: date
+        run: echo "week=$(Get-Date -UFormat '%Y-%V')" >> $env:GITHUB_OUTPUT
+
       - name: Install dependencies
+        run: pip install -r requirements.txt pyinstaller pillow
+
+      # Cache PyInstaller bootloader/hooks, keyed on Python + PyInstaller version
+      - name: Cache PyInstaller
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Roaming\pyinstaller
+          key: pyinstaller-win-py3.12-${{ hashFiles('requirements.txt') }}
+          restore-keys: pyinstaller-win-py3.12-
+
+      - name: Build
+        run: >
+          python -m PyInstaller
+          --noconfirm --onedir --windowed --clean --noupx
+          --icon=icon.png
+          --exclude-module pycryptodomex.selftest
+          --exclude-module pycryptodomex.tests
+          --name "Video Downloader"
+          main.py
+
+      - name: Zip portable output
+        run: Compress-Archive -Path "dist\Video Downloader" -DestinationPath "Windows_x64-portable.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VideoDownloader-Windows
+          path: Windows_x64-portable.zip
+
+  # ────────────────────────────────────────────────────────────
+  build-linux:
+    name: Build, Linux (dir / AppImage / .deb)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Get current week (for cache rotation)
+        id: date
+        run: echo "week=$(date +'%Y-%V')" >> $GITHUB_OUTPUT
+
+      # Cache pip, same weekly-rotation strategy as Windows
+      - name: Cache pip (Linux)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-linux-${{ hashFiles('requirements.txt') }}-${{ steps.date.outputs.week }}
+          restore-keys: |
+            pip-linux-${{ hashFiles('requirements.txt') }}-
+            pip-linux-
+
+      # Cache apt packages list + downloaded .deb files
+      - name: Cache apt packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            /var/cache/apt/archives
+            /var/lib/apt/lists
+          key: apt-${{ runner.os }}-${{ hashFiles('.github/workflows/main.yml') }}
+          restore-keys: apt-${{ runner.os }}-
+
+      - name: Install system dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg python3-pip
-          pip3 install --upgrade yt-dlp
-      
-      - name: Download YouTube Video
-        id: download
+          sudo apt-get update -y
+          sudo apt-get install -y \
+            libxcb-xinerama0 libxcb-cursor0 libgl1 libegl1 \
+            libdbus-1-3 libxkbcommon-x11-0 \
+            fuse libfuse2 \
+            dpkg-dev
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt pyinstaller
+
+      # Cache appimagetool binary, it rarely changes
+      - name: Cache appimagetool
+        id: cache-appimagetool
+        uses: actions/cache@v4
+        with:
+          path: /usr/local/bin/appimagetool
+          key: appimagetool-x86_64-continuous
+
+      - name: Download appimagetool (if not cached)
+        if: steps.cache-appimagetool.outputs.cache-hit != 'true'
         run: |
-          mkdir -p downloads
-          URL="${{ github.event.inputs.video_url }}"
-          FORMAT="${{ github.event.inputs.format }}"
-          QUALITY="${{ github.event.inputs.quality }}"
-          
-          echo "🎬 Downloading: $URL"
-          echo "📁 Format: $FORMAT"
-          echo "📊 Quality: $QUALITY"
-          
-          # Set quality filter
-          case "$QUALITY" in
-            "1080p") QUALITY_FILTER="bestvideo[height<=1080]+bestaudio/best[height<=1080]" ;;
-            "720p")  QUALITY_FILTER="bestvideo[height<=720]+bestaudio/best[height<=720]" ;;
-            "480p")  QUALITY_FILTER="bestvideo[height<=480]+bestaudio/best[height<=480]" ;;
-            "360p")  QUALITY_FILTER="bestvideo[height<=360]+bestaudio/best[height<=360]" ;;
-            "audio-only") QUALITY_FILTER="bestaudio" ;;
-            *)       QUALITY_FILTER="bestvideo+bestaudio/best" ;;
-          esac
-          
-          # METHOD 1: Try yt-dlp (most reliable)
-          echo "📥 Method 1: Using yt-dlp..."
-          
-          if [ "$QUALITY" == "audio-only" ] || [ "$FORMAT" == "mp3" ]; then
-            yt-dlp \
-              --no-check-certificate \
-              --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
-              --extractor-args "youtube:player_client=android_embedded" \
-              --extractor-args "youtube:skip=webpage,player_js" \
-              --sleep-interval 2 \
-              --max-sleep-interval 5 \
-              --retries 10 \
-              --fragment-retries 10 \
-              -f bestaudio \
-              --extract-audio \
-              --audio-format mp3 \
-              --audio-quality 0 \
-              -o "downloads/video.%(ext)s" \
-              "$URL" 2>&1
-          else
-            yt-dlp \
-              --no-check-certificate \
-              --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
-              --extractor-args "youtube:player_client=android_embedded" \
-              --extractor-args "youtube:skip=webpage,player_js" \
-              --sleep-interval 2 \
-              --max-sleep-interval 5 \
-              --retries 10 \
-              --fragment-retries 10 \
-              -f "$QUALITY_FILTER" \
-              --merge-output-format mp4 \
-              -o "downloads/video.%(ext)s" \
-              "$URL" 2>&1
-          fi
-          
-          # Check if download succeeded and file is valid
-          FILE=$(find downloads -type f -size +100k 2>/dev/null | head -n1)
-          
-          if [ -n "$FILE" ] && [ -f "$FILE" ]; then
-            SIZE=$(du -h "$FILE" | cut -f1)
-            echo "✅ Download successful!"
-            echo "📁 File: $(basename "$FILE")"
-            echo "📊 Size: $SIZE"
-            echo "file=$(basename "$FILE")" >> $GITHUB_OUTPUT
-          else
-            echo "⚠️ yt-dlp failed, trying METHOD 2: Free APIs..."
-            
-            # METHOD 2: Try free APIs
-            ENCODED_URL=$(echo "$URL" | sed 's/&/%26/g' | sed 's/?/%3F/g')
-            
-            if [ "$QUALITY" == "audio-only" ] || [ "$FORMAT" == "mp3" ]; then
-              echo "🎵 Downloading audio via API..."
-              curl -L --max-time 60 -o downloads/audio.mp3 \
-                "https://api.vevioz.com/api/button/mp3/$URL" 2>/dev/null || \
-              curl -L --max-time 60 -o downloads/audio.mp3 \
-                "https://youtube-mp3-api.com/api/convert?url=$ENCODED_URL" 2>/dev/null || \
-              curl -L --max-time 60 -o downloads/audio.mp3 \
-                "https://yt-api.com/api/audio?url=$ENCODED_URL" 2>/dev/null
-              
-              # Check if valid
-              if [ -f "downloads/audio.mp3" ] && [ $(stat -c%s "downloads/audio.mp3") -gt 100000 ]; then
-                echo "✅ Audio downloaded via API"
-                mv downloads/audio.mp3 downloads/video.mp3
-                echo "file=video.mp3" >> $GITHUB_OUTPUT
-              fi
-            else
-              echo "🎬 Downloading video via API..."
-              curl -L --max-time 60 -o downloads/video.mp4 \
-                "https://api.vevioz.com/api/button/mp4/$URL" 2>/dev/null || \
-              curl -L --max-time 60 -o downloads/video.mp4 \
-                "https://yt-api.com/api/video?url=$ENCODED_URL" 2>/dev/null || \
-              curl -L --max-time 60 -o downloads/video.mp4 \
-                "https://youtube-mp4-api.com/api/convert?url=$ENCODED_URL" 2>/dev/null
-              
-              # Check if valid
-              if [ -f "downloads/video.mp4" ] && [ $(stat -c%s "downloads/video.mp4") -gt 100000 ]; then
-                echo "✅ Video downloaded via API"
-                echo "file=video.mp4" >> $GITHUB_OUTPUT
-              fi
-            fi
-          fi
-          
-          # Final check
-          FINAL_FILE=$(find downloads -type f -size +100k 2>/dev/null | head -n1)
-          if [ -z "$FINAL_FILE" ]; then
-            echo "❌ All download methods failed!"
-            echo "💡 The video might be:"
-            echo "   - Private or unlisted"
-            echo "   - Age-restricted"
-            echo "   - Region-blocked"
-            echo "   - Not available"
-            echo ""
-            echo "📝 Creating error file..."
-            echo "Download failed. Please try with cookies method or a different URL." > downloads/ERROR.txt
-            echo "file=ERROR.txt" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-      
-      - name: Verify downloaded file
+          wget -q \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage \
+            -O /usr/local/bin/appimagetool
+          chmod +x /usr/local/bin/appimagetool
+
+      # ── 1. PyInstaller build ─────────────────────────────────
+      - name: PyInstaller build
         run: |
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "📋 FILE VERIFICATION"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          
-          FILE=$(find downloads -type f -size +100k 2>/dev/null | head -n1)
-          
-          if [ -n "$FILE" ]; then
-            SIZE=$(stat -c%s "$FILE" 2>/dev/null || stat -f%z "$FILE" 2>/dev/null)
-            echo "✅ File found: $(basename "$FILE")"
-            echo "📊 Size: $(numfmt --to=iec $SIZE 2>/dev/null || echo "$SIZE bytes")"
-            
-            # Check if it's a real video/audio file
-            if file "$FILE" | grep -qE "(MP4|MPEG|audio|video|media)"; then
-              echo "✅ Valid media file detected!"
-              
-              # Try to get duration
-              if command -v ffprobe &> /dev/null; then
-                DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$FILE" 2>/dev/null)
-                if [ -n "$DURATION" ]; then
-                  echo "⏱️ Duration: $(date -d@${DURATION%.*} -u +%H:%M:%S 2>/dev/null || echo "Unknown")"
-                fi
-              fi
-            else
-              echo "⚠️ Warning: File may not be a valid video file"
-              echo "Content preview:"
-              head -c 200 "$FILE"
-            fi
-          else
-            echo "❌ No valid file found (>100KB)"
-          fi
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-      
-      - name: Upload artifact
+          python -m PyInstaller \
+            --noconfirm --onedir --windowed --clean --noupx \
+            --icon=icon.png \
+            --exclude-module pycryptodomex.selftest \
+            --exclude-module pycryptodomex.tests \
+            --name "Video Downloader" \
+            main.py
+
+      - name: Zip portable output
+        run: |
+          mkdir -p zip_out
+          cp -r "dist/Video Downloader" "zip_out/Video Downloader"
+          cd zip_out
+          zip -r "../Linux_x64-portable.zip" "Video Downloader"
+
+      - name: Upload plain Linux dir
         uses: actions/upload-artifact@v4
         with:
-          name: youtube-download-${{ github.run_id }}
-          path: downloads/
-          retention-days: 7
-          if-no-files-found: warn
-      
-      - name: Final result
-        if: always()
+          name: VideoDownloader-Linux
+          path: Linux_x64-portable.zip
+
+      # ── 2. AppImage ──────────────────────────────────────────
+      - name: Create AppDir
         run: |
-          echo ""
-          echo "╔════════════════════════════════════════════╗"
-          echo "║          DOWNLOAD RESULT                  ║"
-          echo "╚════════════════════════════════════════════╝"
-          echo ""
-          
-          FILE=$(find downloads -type f -size +100k 2>/dev/null | head -n1)
-          
-          if [ -n "$FILE" ]; then
-            SIZE=$(du -h "$FILE" | cut -f1)
-            echo "✅ STATUS: SUCCESS"
-            echo "📁 FILE: $(basename "$FILE")"
-            echo "📊 SIZE: $SIZE"
-            echo "📥 Download from: Artifacts section (top of page)"
-            echo ""
-            echo "🎉 The video was downloaded successfully!"
-          else
-            echo "❌ STATUS: FAILED"
-            echo ""
-            echo "💡 The video could not be downloaded because:"
-            echo "   1. YouTube is blocking GitHub's IP addresses"
-            echo "   2. The video might be private or restricted"
-            echo "   3. The API services are rate-limited"
-            echo ""
-            echo "🔧 SOLUTIONS:"
-            echo "   • Try a different URL"
-            echo "   • Wait 5-10 minutes and try again"
-            echo "   • Use the COOKIES method (most reliable)"
-            echo "   • Download locally using: yt-dlp -f best \"URL\""
-          fi
+          APPDIR="AppDir"
+          BIN_SRC="dist/Video Downloader"
+
+          mkdir -p "$APPDIR/usr/bin"
+          mkdir -p "$APPDIR/usr/share/applications"
+          mkdir -p "$APPDIR/usr/share/icons/hicolor/256x256/apps"
+
+          cp -r "$BIN_SRC"/. "$APPDIR/usr/bin/"
+          cp icon.png "$APPDIR/usr/share/icons/hicolor/256x256/apps/video-downloader.png"
+          cp icon.png "$APPDIR/video-downloader.png"
+
+          cat > "$APPDIR/usr/share/applications/video-downloader.desktop" <<EOF
+          [Desktop Entry]
+          Name=Video Downloader
+          Exec=Video Downloader
+          Icon=video-downloader
+          Type=Application
+          Categories=AudioVideo;Network;
+          X-AppImage-Version=${{ github.event.inputs.version }}
+          EOF
+
+          cat > "$APPDIR/AppRun" <<'EOF'
+          #!/bin/sh
+          HERE="$(dirname "$(readlink -f "$0")")"
+          exec "$HERE/usr/bin/Video Downloader" "$@"
+          EOF
+          chmod +x "$APPDIR/AppRun"
+
+          cp "$APPDIR/usr/share/applications/video-downloader.desktop" "$APPDIR/video-downloader.desktop"
+
+      - name: Build AppImage
+        run: ARCH=x86_64 appimagetool AppDir VideoDownloader-x86_64-${{ github.event.inputs.version }}.AppImage
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VideoDownloader-AppImage
+          path: VideoDownloader-x86_64-${{ github.event.inputs.version }}.AppImage
+
+      # ── 3. .deb ─────────────────────────────────────────────
+      - name: Create .deb package
+        run: |
+          PKG="video-downloader_amd64"
+          BIN_SRC="dist/Video Downloader"
+
+          mkdir -p "$PKG/usr/lib/video-downloader"
+          mkdir -p "$PKG/usr/bin"
+          mkdir -p "$PKG/usr/share/applications"
+          mkdir -p "$PKG/usr/share/icons/hicolor/256x256/apps"
+          mkdir -p "$PKG/DEBIAN"
+
+          cp -r "$BIN_SRC"/. "$PKG/usr/lib/video-downloader/"
+
+          cat > "$PKG/usr/bin/video-downloader" <<'EOF'
+          #!/bin/sh
+          exec /usr/lib/video-downloader/"Video Downloader" "$@"
+          EOF
+          chmod +x "$PKG/usr/bin/video-downloader"
+
+          cp icon.png "$PKG/usr/share/icons/hicolor/256x256/apps/video-downloader.png"
+
+          cat > "$PKG/usr/share/applications/video-downloader.desktop" <<EOF
+          [Desktop Entry]
+          Name=Video Downloader
+          Exec=video-downloader
+          Icon=video-downloader
+          Type=Application
+          Categories=AudioVideo;Network;
+          EOF
+
+          cat > "$PKG/DEBIAN/control" <<EOF
+          Package: video-downloader
+          Version: ${{ github.event.inputs.version }}
+          Architecture: amd64
+          Maintainer: truelockmc
+          Description: GUI & CLI video downloader powered by yt-dlp
+          Depends: libgl1, libegl1, libdbus-1-3, libxkbcommon-x11-0
+          EOF
+
+          dpkg-deb --build --root-owner-group "$PKG"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VideoDownloader-deb
+          path: "*.deb"
+
+  # ────────────────────────────────────────────────────────────
+  # curl_cffi ships only single-arch wheels on PyPI (no universal2 fat binary),
+  # so we build two separate .app bundles instead of one universal2 binary.
+  build-mac-arm64:
+    name: Build, macOS Apple Silicon (arm64)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Get current week (for cache rotation)
+        id: date
+        run: echo "week=$(date +'%Y-%V')" >> $GITHUB_OUTPUT
+
+      - name: Cache pip (macOS arm64)
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/pip
+          key: pip-mac-arm64-${{ hashFiles('requirements.txt') }}-${{ steps.date.outputs.week }}
+          restore-keys: |
+            pip-mac-arm64-${{ hashFiles('requirements.txt') }}-
+            pip-mac-arm64-
+
+      - name: Cache PyInstaller (macOS arm64)
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Application Support/pyinstaller
+          key: pyinstaller-mac-arm64-py3.12-${{ hashFiles('requirements.txt') }}
+          restore-keys: pyinstaller-mac-arm64-py3.12-
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt pyinstaller pillow
+
+      - name: Build .app bundle (arm64)
+        run: |
+          python -m PyInstaller \
+            --noconfirm --onedir --windowed --clean --noupx \
+            --icon=icon.png \
+            --exclude-module pycryptodomex.selftest \
+            --exclude-module pycryptodomex.tests \
+            --target-arch arm64 \
+            --name "Video Downloader" \
+            main.py
+
+      - name: Zip portable output (ditto)
+        run: |
+          ditto -c -k --sequesterRsrc --keepParent \
+            "dist/Video Downloader.app" \
+            "macOS_arm64-portable.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VideoDownloader-macOS-arm64
+          path: macOS_arm64-portable.zip
+
+  # ────────────────────────────────────────────────────────────
+  build-mac-x86_64:
+    name: Build, macOS Intel (x86_64)
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Get current week (for cache rotation)
+        id: date
+        run: echo "week=$(date +'%Y-%V')" >> $GITHUB_OUTPUT
+
+      - name: Cache pip (macOS x86_64)
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/pip
+          key: pip-mac-x86_64-${{ hashFiles('requirements.txt') }}-${{ steps.date.outputs.week }}
+          restore-keys: |
+            pip-mac-x86_64-${{ hashFiles('requirements.txt') }}-
+            pip-mac-x86_64-
+
+      - name: Cache PyInstaller (macOS x86_64)
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Application Support/pyinstaller
+          key: pyinstaller-mac-x86_64-py3.12-${{ hashFiles('requirements.txt') }}
+          restore-keys: pyinstaller-mac-x86_64-py3.12-
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt pyinstaller pillow
+
+      - name: Build .app bundle (x86_64)
+        run: |
+          python -m PyInstaller \
+            --noconfirm --onedir --windowed --clean --noupx \
+            --icon=icon.png \
+            --exclude-module pycryptodomex.selftest \
+            --exclude-module pycryptodomex.tests \
+            --target-arch x86_64 \
+            --name "Video Downloader" \
+            main.py
+
+      - name: Zip portable output (ditto)
+        run: |
+          ditto -c -k --sequesterRsrc --keepParent \
+            "dist/Video Downloader.app" \
+            "macOS_x86_64-portable.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VideoDownloader-macOS-x86_64
+          path: macOS_x86_64-portable.zip
