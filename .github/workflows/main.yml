@@ -115,11 +115,12 @@ jobs:
         env:
           YTDLP_COOKIES: ${{ secrets.YTDLP_COOKIES }}
         run: |
+          echo "YTDLP_COOKIES secret length: ${#YTDLP_COOKIES} characters"
           if [ -n "$YTDLP_COOKIES" ]; then
             printf '%s' "$YTDLP_COOKIES" > "$GITHUB_WORKSPACE/cookies.txt"
-            echo "Cookies file written (will be passed to yt-dlp automatically)."
+            echo "Cookies file written to $GITHUB_WORKSPACE/cookies.txt ($(wc -l < "$GITHUB_WORKSPACE/cookies.txt") lines)."
           else
-            echo "No YTDLP_COOKIES secret set; continuing without cookies."
+            echo "No YTDLP_COOKIES secret set (or it is empty); continuing without cookies."
             echo "If a site returns a bot-check / login error, add the YTDLP_COOKIES repo secret (see README notes)."
           fi
 
