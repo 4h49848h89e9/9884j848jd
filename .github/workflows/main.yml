@@ -111,6 +111,18 @@ jobs:
       - name: Prepare output folder
         run: mkdir -p "$GITHUB_WORKSPACE/downloads"
 
+      - name: Write cookies file (optional, from YTDLP_COOKIES secret)
+        env:
+          YTDLP_COOKIES: ${{ secrets.YTDLP_COOKIES }}
+        run: |
+          if [ -n "$YTDLP_COOKIES" ]; then
+            printf '%s' "$YTDLP_COOKIES" > "$GITHUB_WORKSPACE/cookies.txt"
+            echo "Cookies file written (will be passed to yt-dlp automatically)."
+          else
+            echo "No YTDLP_COOKIES secret set; continuing without cookies."
+            echo "If a site returns a bot-check / login error, add the YTDLP_COOKIES repo secret (see README notes)."
+          fi
+
       - name: Run downloader (CLI, non-interactive)
         env:
           QT_QPA_PLATFORM: offscreen
@@ -136,12 +148,21 @@ jobs:
             ARGS+=(-n "$VD_FILENAME")
           fi
 
-          echo "Running: python main.py ${ARGS[*]} ${VD_YTDLP_ARGS:+-a $VD_YTDLP_ARGS}"
-
+          # Build the extra yt-dlp args: cookies file (if present) + whatever the user typed.
+          EXTRA_YTDLP_ARGS=""
+          if [ -f "$GITHUB_WORKSPACE/cookies.txt" ]; then
+            EXTRA_YTDLP_ARGS="--cookies $GITHUB_WORKSPACE/cookies.txt"
+          fi
           if [ -n "$VD_YTDLP_ARGS" ]; then
+            EXTRA_YTDLP_ARGS="$EXTRA_YTDLP_ARGS $VD_YTDLP_ARGS"
+          fi
+
+          echo "Running: python main.py ${ARGS[*]} ${EXTRA_YTDLP_ARGS:+-a $EXTRA_YTDLP_ARGS}"
+
+          if [ -n "$EXTRA_YTDLP_ARGS" ]; then
             # Word-split intentionally: lets multi-flag strings like
             # "--cookies cookies.txt --proxy socks5://..." work as separate -a tokens.
-            python main.py "${ARGS[@]}" -a $VD_YTDLP_ARGS
+            python main.py "${ARGS[@]}" -a $EXTRA_YTDLP_ARGS
           else
             python main.py "${ARGS[@]}"
           fi
