@@ -61,7 +61,7 @@ jobs:
           sudo apt-get install -y ffmpeg
 
       # ────────────────────────────────────────────────────────────
-      # 4. Install Deno with PATH fix
+      # 4. Install Deno
       # ────────────────────────────────────────────────────────────
       - name: Install Deno
         run: |
@@ -70,12 +70,16 @@ jobs:
         shell: bash
 
       # ────────────────────────────────────────────────────────────
-      # 5. Verify Deno installation
+      # 5. Verify installations
       # ────────────────────────────────────────────────────────────
-      - name: Verify Deno
+      - name: Verify installations
         run: |
-          echo "Deno version:"
-          deno --version || echo "Deno not available"
+          echo "=== Python ==="
+          python --version
+          echo "=== FFmpeg ==="
+          ffmpeg -version | head -1
+          echo "=== Deno ==="
+          deno --version || echo "Deno not found"
         shell: bash
 
       # ────────────────────────────────────────────────────────────
@@ -85,22 +89,21 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pyinstaller pillow
+        shell: bash
 
       # ────────────────────────────────────────────────────────────
       # 7. Create download directory
       # ────────────────────────────────────────────────────────────
       - name: Create download directory
-        run: |
-          mkdir -p ${{ github.event.inputs.folder }}
-          echo "Download directory created: ${{ github.event.inputs.folder }}"
+        run: mkdir -p ${{ github.event.inputs.folder }}
 
       # ────────────────────────────────────────────────────────────
-      # 8. Build CLI command
+      # 8. Run the downloader
       # ────────────────────────────────────────────────────────────
-      - name: Build CLI command
-        id: build_cmd
+      - name: Download video
+        id: download
         run: |
+          # Build command with proper escaping
           CMD="python main.py --cli \"${{ github.event.inputs.url }}\""
           
           if [ -n "${{ github.event.inputs.format }}" ]; then
@@ -129,103 +132,54 @@ jobs:
             CMD="$CMD -a \"--no-playlist\""
           fi
           
-          echo "command=$CMD" >> $GITHUB_OUTPUT
-          echo "📝 Command: $CMD"
-        shell: bash
-
-      # ────────────────────────────────────────────────────────────
-      # 9. Run the downloader with debugging
-      # ────────────────────────────────────────────────────────────
-      - name: Download video
-        run: |
-          echo "🚀 Starting video download..."
-          echo "=========================================="
-          echo "Current directory: $(pwd)"
-          echo "Files in current directory:"
-          ls -la
-          echo "=========================================="
-          echo "Python: $(which python)"
-          echo "Python version: $(python --version 2>&1)"
-          echo "FFmpeg: $(which ffmpeg)"
-          echo "FFmpeg version: $(ffmpeg -version 2>&1 | head -1)"
-          echo "Deno: $(which deno 2>/dev/null || echo 'Deno not in PATH')"
-          echo "Deno version: $(deno --version 2>/dev/null || echo 'Deno not available')"
-          echo "=========================================="
-          echo "Running command:"
-          echo "${{ steps.build_cmd.outputs.command }}"
-          echo "=========================================="
+          echo "Running: $CMD"
+          echo "----------------------------------------"
           
-          # Run the command with error handling
-          if eval ${{ steps.build_cmd.outputs.command }}; then
-            echo "✅ Download completed successfully!"
+          # Run the command
+          eval $CMD
+          DOWNLOAD_EXIT_CODE=$?
+          
+          echo "----------------------------------------"
+          echo "Exit code: $DOWNLOAD_EXIT_CODE"
+          
+          if [ $DOWNLOAD_EXIT_CODE -eq 0 ]; then
+            echo "status=success" >> $GITHUB_OUTPUT
           else
-            echo "❌ Download failed with exit code: $?"
-            echo "Checking for partial downloads..."
-            if [ -d "${{ github.event.inputs.folder }}" ]; then
-              ls -la ${{ github.event.inputs.folder }}/
-            fi
-            exit 1
+            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "exit_code=$DOWNLOAD_EXIT_CODE" >> $GITHUB_OUTPUT
           fi
-          
-          echo "=========================================="
         shell: bash
         continue-on-error: true
 
       # ────────────────────────────────────────────────────────────
-      # 10. List downloaded files
+      # 9. List downloaded files
       # ────────────────────────────────────────────────────────────
       - name: List downloaded files
         if: always()
         run: |
-          echo "📁 Downloaded files in ${{ github.event.inputs.folder }}:"
+          echo "=== Downloaded files ==="
           if [ -d "${{ github.event.inputs.folder }}" ]; then
             ls -la ${{ github.event.inputs.folder }}/ || echo "No files found"
-            echo "File details:"
-            find ${{ github.event.inputs.folder }} -type f -exec ls -lh {} \;
+            echo "File sizes:"
+            find ${{ github.event.inputs.folder }} -type f -exec ls -lh {} \; 2>/dev/null || echo "No files"
           else
-            echo "Download folder doesn't exist"
+            echo "Download folder does not exist"
           fi
 
       # ────────────────────────────────────────────────────────────
-      # 11. Get file info
-      # ────────────────────────────────────────────────────────────
-      - name: Get file info
-        id: file_info
-        if: success() || failure()
-        run: |
-          if [ -d "${{ github.event.inputs.folder }}" ]; then
-            FILE=$(ls -1 ${{ github.event.inputs.folder }}/ 2>/dev/null | head -1)
-            if [ -n "$FILE" ]; then
-              SIZE=$(du -h ${{ github.event.inputs.folder }}/$FILE 2>/dev/null | cut -f1)
-              echo "filename=$FILE" >> $GITHUB_OUTPUT
-              echo "size=$SIZE" >> $GITHUB_OUTPUT
-              echo "📄 File: $FILE"
-              echo "📊 Size: $SIZE"
-            else
-              echo "filename=No files found" >> $GITHUB_OUTPUT
-              echo "size=0" >> $GITHUB_OUTPUT
-              echo "⚠️ No files found in download folder"
-            fi
-          else
-            echo "filename=Download folder not found" >> $GITHUB_OUTPUT
-            echo "size=0" >> $GITHUB_OUTPUT
-            echo "⚠️ Download folder doesn't exist"
-          fi
-
-      # ────────────────────────────────────────────────────────────
-      # 12. Upload artifact
+      # 10. Upload artifact
       # ────────────────────────────────────────────────────────────
       - name: Upload artifact
-        if: success() || failure()
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: downloaded-video-${{ github.run_id }}
           path: ${{ github.event.inputs.folder }}/*
           retention-days: 7
-          if-no-files-found: warn
+          if-no-files-found: ignore
 
       # ────────────────────────────────────────────────────────────
-      # 13. Generate summary
+      # 11. Generate summary
       # ────────────────────────────────────────────────────────────
       - name: Generate summary
         if: always()
@@ -242,28 +196,112 @@ jobs:
           echo "| **Bitrate** | ${{ github.event.inputs.bitrate }} |" >> $GITHUB_STEP_SUMMARY
           echo "| **Filename** | ${{ github.event.inputs.filename }} |" >> $GITHUB_STEP_SUMMARY
           echo "| **Download Playlist** | ${{ github.event.inputs.download_playlist }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Status** | ${{ job.status }} |" >> $GITHUB_STEP_SUMMARY
-          if [ -n "${{ steps.file_info.outputs.filename }}" ]; then
-            echo "| **File** | ${{ steps.file_info.outputs.filename }} |" >> $GITHUB_STEP_SUMMARY
-            echo "| **Size** | ${{ steps.file_info.outputs.size }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Status** | ${{ steps.download.outputs.status || 'unknown' }} |" >> $GITHUB_STEP_SUMMARY
+          if [ -n "${{ steps.download.outputs.exit_code }}" ]; then
+            echo "| **Exit Code** | ${{ steps.download.outputs.exit_code }} |" >> $GITHUB_STEP_SUMMARY
           fi
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## 📥 Download Artifact" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "The downloaded video is available as a GitHub Actions artifact." >> $GITHUB_STEP_SUMMARY
-          echo "You can download it from the **Artifacts** section above." >> $GITHUB_STEP_SUMMARY
           
-          echo ""
-          echo "=========================================="
-          if [ "${{ job.status }}" == "success" ]; then
-            echo "✅ DOWNLOAD COMPLETE!"
+          # Check for downloaded files
+          if [ -d "${{ github.event.inputs.folder }}" ]; then
+            FILE_COUNT=$(ls -1 ${{ github.event.inputs.folder }}/ 2>/dev/null | wc -l)
+            if [ $FILE_COUNT -gt 0 ]; then
+              echo "## ✅ Files Downloaded" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "| File | Size |" >> $GITHUB_STEP_SUMMARY
+              echo "|------|------|" >> $GITHUB_STEP_SUMMARY
+              for f in ${{ github.event.inputs.folder }}/*; do
+                if [ -f "$f" ]; then
+                  SIZE=$(du -h "$f" | cut -f1)
+                  NAME=$(basename "$f")
+                  echo "| $NAME | $SIZE |" >> $GITHUB_STEP_SUMMARY
+                fi
+              done
+            else
+              echo "## ⚠️ No Files Found" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "The download completed but no files were found in the download folder." >> $GITHUB_STEP_SUMMARY
+            fi
           else
-            echo "❌ DOWNLOAD FAILED!"
+            echo "## ❌ Download Folder Missing" >> $GITHUB_STEP_SUMMARY
           fi
+
+      # ────────────────────────────────────────────────────────────
+      # 12. Fallback: Try direct yt-dlp if main.py fails
+      # ────────────────────────────────────────────────────────────
+      - name: Fallback - Direct yt-dlp download
+        if: failure() && steps.download.outputs.status == 'failed'
+        run: |
+          echo "🔄 Main download failed, trying direct yt-dlp..."
           echo "=========================================="
-          if [ -n "${{ steps.file_info.outputs.filename }}" ]; then
-            echo "📄 File: ${{ steps.file_info.outputs.filename }}"
-            echo "📊 Size: ${{ steps.file_info.outputs.size }}"
+          
+          # Install yt-dlp directly
+          pip install yt-dlp
+          
+          # Build yt-dlp command
+          YT_CMD="yt-dlp -o \"${{ github.event.inputs.folder }}/%(title)s.%(ext)s\""
+          
+          if [ "${{ github.event.inputs.format }}" == "mp3" ]; then
+            YT_CMD="$YT_CMD -x --audio-format mp3"
+            if [ -n "${{ github.event.inputs.bitrate }}" ]; then
+              YT_CMD="$YT_CMD --audio-quality ${{ github.event.inputs.bitrate }}"
+            fi
+          elif [ "${{ github.event.inputs.format }}" == "mp4 (with Audio)" ]; then
+            if [ "${{ github.event.inputs.resolution }}" != "best" ] && [ -n "${{ github.event.inputs.resolution }}" ]; then
+              YT_CMD="$YT_CMD -f \"bestvideo[height<=${{ github.event.inputs.resolution }}]+bestaudio/best[height<=${{ github.event.inputs.resolution }}]\""
+            else
+              YT_CMD="$YT_CMD -f bestvideo+bestaudio"
+            fi
+          elif [ "${{ github.event.inputs.format }}" == "mp4 (without Audio)" ]; then
+            if [ "${{ github.event.inputs.resolution }}" != "best" ] && [ -n "${{ github.event.inputs.resolution }}" ]; then
+              YT_CMD="$YT_CMD -f \"bestvideo[height<=${{ github.event.inputs.resolution }}]\""
+            else
+              YT_CMD="$YT_CMD -f bestvideo"
+            fi
+          else
+            YT_CMD="$YT_CMD -f best"
           fi
-          echo "📁 Artifact: downloaded-video-${{ github.run_id }}"
-          echo "=========================================="
+          
+          if [ "${{ github.event.inputs.download_playlist }}" == "true" ]; then
+            YT_CMD="$YT_CMD --yes-playlist"
+          else
+            YT_CMD="$YT_CMD --no-playlist"
+          fi
+          
+          echo "Fallback command: $YT_CMD ${{ github.event.inputs.url }}"
+          echo "----------------------------------------"
+          
+          eval $YT_CMD "${{ github.event.inputs.url }}"
+        shell: bash
+        continue-on-error: true
+
+      # ────────────────────────────────────────────────────────────
+      # 13. List files after fallback
+      # ────────────────────────────────────────────────────────────
+      - name: List files after fallback
+        if: always() && failure()
+        run: |
+          echo "=== Files after fallback ==="
+          if [ -d "${{ github.event.inputs.folder }}" ]; then
+            ls -la ${{ github.event.inputs.folder }}/ || echo "No files"
+          else
+            echo "Checking current directory:"
+            ls -la *.mp4 *.mp3 *.mkv *.avi 2>/dev/null || echo "No media files found"
+          fi
+
+      # ────────────────────────────────────────────────────────────
+      # 14. Upload fallback artifact
+      # ────────────────────────────────────────────────────────────
+      - name: Upload fallback artifact
+        if: always() && failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fallback-download-${{ github.run_id }}
+          path: |
+            ${{ github.event.inputs.folder }}/*
+            *.mp4
+            *.mp3
+            *.mkv
+            *.avi
+          retention-days: 7
+          if-no-files-found: ignore
