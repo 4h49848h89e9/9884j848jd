@@ -1,155 +1,27 @@
-name: YouTube Video Downloader
+name: YouTube Downloader (Docker)
 
 on:
   workflow_dispatch:
     inputs:
-      video_url:
-        description: 'YouTube Video URL (Long or Short)'
+      url:
+        description: 'YouTube URL'
         required: true
         type: string
-        placeholder: 'https://www.youtube.com/watch?v=... or https://youtu.be/...'
-      
-      download_format:
-        description: 'Download Format'
-        required: false
-        default: 'mp4'
-        type: choice
-        options:
-          - mp4
-          - mp3
-          - webm
-      
-      output_filename:
-        description: 'Output filename (without extension, optional)'
-        required: false
-        type: string
-        default: 'youtube_video'
 
 jobs:
-  download-youtube:
+  download:
     runs-on: ubuntu-latest
+    container:
+      image: mikenye/youtube-dl:latest
     
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install dependencies
+      - name: Download video
         run: |
-          python -m pip install --upgrade pip
-          pip install yt-dlp
-          # Install ffmpeg for merging audio/video
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg
-          
-          # Install browser for cookies (fix for bot detection)
-          sudo apt-get install -y chromium-browser
-
-      - name: Download YouTube Video with Cookies
-        id: download
-        run: |
-          # Create downloads directory
-          mkdir -p downloads
-          
-          # Set output template
-          if [ "${{ github.event.inputs.output_filename }}" != "" ]; then
-            OUTPUT_NAME="${{ github.event.inputs.output_filename }}"
-          else
-            OUTPUT_NAME="youtube_video"
-          fi
-          
-          # Create a cookies file using chromium (fixes the "Sign in to confirm you're not a bot" error)
-          # Method 1: Try with cookies from browser (if available)
-          # Method 2: Use --extractor-args to bypass some restrictions
-          
-          # Get video URL
-          VIDEO_URL="${{ github.event.inputs.video_url }}"
-          
-          # Build yt-dlp command with anti-bot measures
-          if [ "${{ github.event.inputs.download_format }}" == "mp3" ]; then
-            # Audio only - best quality with anti-bot flags
-            yt-dlp \
-              --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
-              --extractor-args "youtube:skip=webpage,player_js" \
-              --extractor-args "youtube:player_client=android" \
-              --extractor-args "youtube:player_client=android_embedded" \
-              -f bestaudio \
-              --extract-audio \
-              --audio-format mp3 \
-              --audio-quality 0 \
-              -o "downloads/${OUTPUT_NAME}.%(ext)s" \
-              "$VIDEO_URL" || {
-                echo "⚠️ First attempt failed, trying with different client..."
-                # Fallback method
-                yt-dlp \
-                  --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
-                  --extractor-args "youtube:player_client=web" \
-                  -f bestaudio \
-                  --extract-audio \
-                  --audio-format mp3 \
-                  -o "downloads/${OUTPUT_NAME}.%(ext)s" \
-                  "$VIDEO_URL"
-              }
-          else
-            # Video - best quality with anti-bot flags
-            yt-dlp \
-              --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
-              --extractor-args "youtube:skip=webpage,player_js" \
-              --extractor-args "youtube:player_client=android" \
-              --extractor-args "youtube:player_client=android_embedded" \
-              -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" \
-              --merge-output-format mp4 \
-              -o "downloads/${OUTPUT_NAME}.%(ext)s" \
-              "$VIDEO_URL" || {
-                echo "⚠️ First attempt failed, trying with different client..."
-                # Fallback method with web client
-                yt-dlp \
-                  --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
-                  --extractor-args "youtube:player_client=web" \
-                  -f "best[ext=mp4]" \
-                  -o "downloads/${OUTPUT_NAME}.%(ext)s" \
-                  "$VIDEO_URL"
-              }
-          fi
-          
-          # Get the actual downloaded filename
-          DOWNLOADED_FILE=$(ls -t downloads/ 2>/dev/null | head -n1)
-          if [ -n "$DOWNLOADED_FILE" ]; then
-            echo "downloaded_file=${DOWNLOADED_FILE}" >> $GITHUB_OUTPUT
-            echo "Download complete: ${DOWNLOADED_FILE}"
-          else
-            echo "❌ No file was downloaded. Trying alternative method..."
-            # Final fallback: Use youtube-dl instead of yt-dlp
-            pip install youtube-dl
-            youtube-dl -f best -o "downloads/${OUTPUT_NAME}.%(ext)s" "$VIDEO_URL" 2>/dev/null || true
-          fi
-
-      - name: List downloaded files
-        run: |
-          echo "📁 Downloaded files:"
-          ls -la downloads/ || echo "No files found"
-
-      - name: Upload as Artifact
-        if: always()
+          mkdir -p /github/workspace/downloads
+          youtube-dl -f best -o "/github/workspace/downloads/video.%(ext)s" "${{ github.event.inputs.url }}"
+      
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: youtube-download
+          name: video
           path: downloads/
-          retention-days: 7
-          if-no-files-found: warn
-
-      - name: Display download info
-        if: always()
-        run: |
-          echo "✅ Download completed!"
-          echo "📂 File saved in: downloads/"
-          if [ -f "downloads/${{ steps.download.outputs.downloaded_file }}" ]; then
-            FILE_SIZE=$(du -h "downloads/${{ steps.download.outputs.downloaded_file }}" | cut -f1)
-            echo "📊 File size: ${FILE_SIZE}"
-          else
-            echo "⚠️ No file found. Please check the logs above."
-          fi
